@@ -93,6 +93,12 @@ class CameraSensorCfg(SensorCfg):
   Set to True if you modify the returned data in-place.
   """
 
+  async_render: bool = False
+  """Classic backend only: render on a background thread, at most one
+  frame behind. ``sense()`` snapshots the simulation state, hands it to the
+  render thread and returns the most recently completed frame, keeping the
+  render cost off the training hot path. Ignored by the Warp backend."""
+
   def __post_init__(self) -> None:
     valid = {"rgb", "depth", "segmentation"}
     invalid = {dt for dt in self.data_types if dt not in valid}

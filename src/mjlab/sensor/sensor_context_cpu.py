@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.sensor import raycast_cpu
-from mjlab.sensor.camera_cpu import CpuCameraContext
+from mjlab.sensor.camera_cpu import AsyncCpuCameraContext, CpuCameraContext
 from mjlab.sensor.raycast_cpu import CpuRaycastContext
 from mjlab.sensor.raycast_sensor import GridPatternCfg
 
@@ -49,9 +49,15 @@ class SensorContextCPU:
         )
       self._raycast_ctxs[sensor.cfg.name] = CpuRaycastContext(mj_model, sensor, data)
 
-    self._camera_ctx = (
-      CpuCameraContext(mj_model, self.camera_sensors) if self.camera_sensors else None
-    )
+    # Async camera rendering (CameraSensorCfg.async_render) is opt-in per
+    # sensor; if any sensor opts in, all cameras render on the background
+    # thread (each frame renders every sensor anyway).
+    self._camera_ctx = None
+    if self.camera_sensors:
+      if any(s.cfg.async_render for s in self.camera_sensors):
+        self._camera_ctx = AsyncCpuCameraContext(mj_model, self.camera_sensors)
+      else:
+        self._camera_ctx = CpuCameraContext(mj_model, self.camera_sensors)
 
     # Wire up sensors to use this context.
     for sensor in self.camera_sensors:
@@ -66,6 +72,16 @@ class SensorContextCPU:
   @property
   def has_raycasts(self) -> bool:
     return len(self.raycast_sensors) > 0
+
+  @property
+  def camera_context(self):
+    """The camera render context (``CpuCameraContext`` or async wrapper)."""
+    return self._camera_ctx
+
+  def close(self) -> None:
+    """Release background render resources (async camera render thread)."""
+    if self._camera_ctx is not None and hasattr(self._camera_ctx, "close"):
+      self._camera_ctx.close()
 
   def sense(self) -> None:
     """Compute all raycast sensors and render all camera sensors."""

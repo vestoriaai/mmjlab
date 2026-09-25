@@ -380,3 +380,14 @@ class ClassicSimulation:
     """Run raycast computation and camera rendering for this step."""
     if self._sensor_context is not None:
       self._sensor_context.sense()
+
+  def close(self) -> None:
+    """Release background resources (e.g. the async camera render thread)."""
+    if self._sensor_context is not None and hasattr(self._sensor_context, "close"):
+      self._sensor_context.close()
+
+  def __del__(self) -> None:
+    try:
+      self.close()
+    except Exception:
+      pass
