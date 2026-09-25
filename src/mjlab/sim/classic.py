@@ -17,12 +17,16 @@ them. Model fields expanded for domain randomization are mjbatch ``expand`` view
 per environment before each call; ``recompute_constants`` is ``set_const``.
 
 Not supported (Warp-only): camera/raycast sensors (``SensorContext``), mesh variants,
-models with sleep enabled, and the ``wp_model``/``wp_data`` escape hatches used by the
-differential-IK action.
+and the ``wp_model``/``wp_data`` escape hatches used by the differential-IK action.
+The ``sleep`` enable flag is accepted but stripped (C-engine sleep islands are not
+bit-identical to sleep-off trajectories); camera/raycast sensing runs through
+``SensorContextCPU``.
 """
 
 from __future__ import annotations
 
+import warnings
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 import mujoco
@@ -212,6 +216,24 @@ class ClassicSimulation:
       compiled = model
     else:
       raise ValueError("Either model or spec must be provided.")
+    if "sleep" in cfg.mujoco.enableflags:
+      # The C engine implements mjENBL_SLEEP, but sleep-on islands are NOT
+      # bit-identical to sleep-off once bodies fall asleep (measured ~1e-6
+      # divergence), and the classic backend promises sleep-on == sleep-off
+      # trajectories. Strip the flag and warn instead of passing it through.
+      cfg = replace(
+        cfg,
+        mujoco=replace(
+          cfg.mujoco,
+          enableflags=tuple(f for f in cfg.mujoco.enableflags if f != "sleep"),
+        ),
+      )
+      warnings.warn(
+        "The classic backend ignores the 'sleep' enable flag: C-engine sleep "
+        "islands are not bit-identical to sleep-off trajectories. Sleep "
+        "remains a warp-backend optimization; use backend='warp' for it.",
+        stacklevel=2,
+      )
     cfg.mujoco.apply(compiled)
 
     self._mj_model: mujoco.MjModel = compiled
