@@ -7,10 +7,10 @@ semantics match the Warp path: per-sensor RGB buffers of shape
 ``[num_envs, height, width, 3]`` (uint8), served through ``get_rgb``.
 
 Limitations vs the Warp render pipeline: depth and segmentation are not
-available (``NotImplementedError``), ``use_textures`` is not configurable
-(the model renders with its own textures), and rendering is serial per
-environment — for visual RL prefer rendering every k-th step or an async
-driver.
+available (``NotImplementedError``), ``use_textures``/``use_shadows`` are
+not configurable (the model renders with its own textures and the
+renderer's default flags), and rendering is serial per environment — for
+visual RL prefer rendering every k-th step or an async driver.
 """
 
 from __future__ import annotations
@@ -62,7 +62,6 @@ class CpuCameraContext:
 
       renderer = self._get_renderer(height, width)
       scene_option = self._scene_option(sensor)
-      scene_flags = self._scene_flags(sensor)
       cam_id = sensor.camera_idx
 
       for w in range(num_envs):
@@ -73,9 +72,10 @@ class CpuCameraContext:
         scratch.mocap_quat[:] = data.mocap_quat[w].numpy()
         mujoco.mj_kinematics(model, scratch)
         mujoco.mj_comPos(model, scratch)
-        renderer.update_scene(
-          scratch, camera=cam_id, scene_option=scene_option, scene_flags=scene_flags
-        )
+        # Static (worldbody) cameras/lights only get their mjData positions
+        # from mj_camlight, not mj_kinematics, in mujoco 3.11.
+        mujoco.mj_camlight(model, scratch)
+        renderer.update_scene(scratch, camera=cam_id, scene_option=scene_option)
         buf[w] = torch.from_numpy(renderer.render())
 
   def _scene_option(self, sensor) -> mujoco.MjvOption | None:
@@ -87,12 +87,6 @@ class CpuCameraContext:
     for g in range(mujoco.mjNGROUP):
       opt.geomgroup[g] = 1 if g in set(groups) else 0
     return opt
-
-  def _scene_flags(self, sensor) -> int:
-    flags = 0
-    if sensor.cfg.use_shadows:
-      flags |= int(mujoco.mjtRndFlag.mjRND_SHADOW)
-    return flags
 
   # Data access, mirroring SensorContext.get_rgb for CameraSensor.
 
