@@ -21,6 +21,13 @@ from mjlab.utils.spec import export_spec, non_default_option_fields
 _SCENE_XML = Path(__file__).parent / "scene.xml"
 
 
+def _is_classic_data(data: Any) -> bool:
+  """Whether the data bridge belongs to the classic (CPU) backend."""
+  from mjlab.sim.classic import ClassicData
+
+  return isinstance(data, ClassicData)
+
+
 @dataclass(kw_only=True)
 class SceneCfg:
   """Configuration for a simulation scene."""
@@ -178,14 +185,26 @@ class Scene:
     if ctx_sensors:
       camera_sensors = [s for s in ctx_sensors if isinstance(s, CameraSensor)]
       raycast_sensors = [s for s in ctx_sensors if isinstance(s, RayCastSensor)]
-      self._sensor_context = SensorContext(
-        mj_model=mj_model,
-        model=model,
-        data=data,
-        camera_sensors=camera_sensors,
-        raycast_sensors=raycast_sensors,
-        device=self._device,
-      )
+      if _is_classic_data(data):
+        # Classic backend: CPU sensing (torch raycasts + mujoco.Renderer)
+        # instead of the mujoco_warp render pipeline.
+        from mjlab.sensor.sensor_context_cpu import SensorContextCPU
+
+        self._sensor_context = SensorContextCPU(
+          mj_model=mj_model,
+          data=data,
+          camera_sensors=camera_sensors,
+          raycast_sensors=raycast_sensors,
+        )
+      else:
+        self._sensor_context = SensorContext(
+          mj_model=mj_model,
+          model=model,
+          data=data,
+          camera_sensors=camera_sensors,
+          raycast_sensors=raycast_sensors,
+          device=self._device,
+        )
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     for ent in self._entities.values():

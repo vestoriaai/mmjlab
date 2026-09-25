@@ -338,9 +338,23 @@ class ClassicSimulation:
       self._batch.reset(ids)
 
   def set_sensor_context(self, ctx: "SensorContext") -> None:
-    raise NotImplementedError(
-      "Camera and raycast sensors require the Warp backend; use backend='warp'."
-    )
+    """Wire a sensor context for camera/raycast sensing.
+
+    The classic backend consumes a :class:`mjlab.sensor.sensor_context_cpu.
+    SensorContextCPU` (torch raycasts + ``mujoco.Renderer``), which the scene
+    builds automatically when the simulation bridges are CPU bridges. The
+    Warp ``SensorContext`` is not accepted: its render pipeline is
+    mujoco_warp-only.
+    """
+    if not hasattr(ctx, "sense"):
+      raise NotImplementedError(
+        "The classic backend requires SensorContextCPU (from "
+        "mjlab.sensor.sensor_context_cpu); the Warp SensorContext renders "
+        "through mujoco_warp. Use backend='warp' for the Warp context."
+      )
+    self._sensor_context = ctx
 
   def sense(self) -> None:
-    pass
+    """Run raycast computation and camera rendering for this step."""
+    if self._sensor_context is not None:
+      self._sensor_context.sense()
