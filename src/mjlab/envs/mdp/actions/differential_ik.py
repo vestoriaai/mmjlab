@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import mujoco_warp as mjwarp
+import numpy as np
 import torch
 import warp as wp
 
@@ -20,6 +21,58 @@ from mjlab.utils.string import resolve_expr
 if TYPE_CHECKING:
   from mjlab.entity import Entity
   from mjlab.envs import ManagerBasedRlEnv
+
+
+def _jac_torch(
+  cdof: torch.Tensor,
+  subtree_com: torch.Tensor,
+  dof_bodyid,
+  body_rootid,
+  body_parentid,
+  point: torch.Tensor,
+  body_id: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Batched point Jacobian for the classic backend (CPU, torch).
+
+  Mirrors ``mj_jac``: for dof i whose body is the target body or one of its
+  kinematic ancestors, ``jacr_i = cdof_ang_i`` and ``jacp_i = cdof_lin_i +
+  cross(cdof_ang_i, point - subtree_com[body_rootid[body]])``; all other
+  dofs are zero (the C engine skips them; mjwarp zeroes them via
+  ``body_isdofancestor``).
+
+  Args:
+    cdof: [B, nv, 6] com-based dof axes as (ang, lin).
+    subtree_com: [B, nbody, 3].
+    dof_bodyid/body_rootid/body_parentid: mjModel index arrays.
+    point: [B, 3] world-frame reference point.
+    body_id: target body (same for every env, as in the action term).
+
+  Returns:
+    (jacp [B, 3, nv], jacr [B, 3, nv]).
+  """
+  sd = subtree_com[:, body_rootid[body_id]]  # [B, 3]
+  offset = point - sd
+  ang = cdof[..., :3]
+  lin = cdof[..., 3:]
+  jacp = lin + torch.cross(ang, offset.unsqueeze(1), dim=-1)
+  jacr = ang
+  ancestors = set()
+  b = int(body_id)
+  while b > 0:
+    ancestors.add(b)
+    p = int(np.asarray(body_parentid)[b])
+    if p == b:
+      # Root bodies of kinematic trees are their own parent (mujoco 3.x).
+      break
+    b = p
+  mask = torch.as_tensor(
+    np.isin(np.asarray(dof_bodyid), list(ancestors)),
+    dtype=cdof.dtype,
+    device=cdof.device,
+  ).view(1, -1, 1)
+  jacp = jacp * mask
+  jacr = jacr * mask
+  return jacp.transpose(1, 2), jacr.transpose(1, 2)
 
 
 @dataclass(kw_only=True)
@@ -151,6 +204,14 @@ class DifferentialIKAction(ActionTerm):
 
     nworld = self.num_envs
     nv = self._env.sim.mj_model.nv
+
+    if self._env.sim.cfg.backend == "classic":
+      # classic backend: plain torch buffers; the jacobian is computed with
+      # _jac_torch from the batched cdof/subtree_com views.
+      self._jacp_torch = torch.zeros(nworld, 3, nv, device=self.device)
+      self._jacr_torch = torch.zeros(nworld, 3, nv, device=self.device)
+      self._point_torch = torch.zeros(nworld, 3, device=self.device)
+      return
 
     with wp.ScopedDevice(self._env.sim.wp_device):
       self._jacp_wp = wp.zeros((nworld, 3, nv), dtype=float)
@@ -303,6 +364,19 @@ class DifferentialIKAction(ActionTerm):
 
   def _compute_jacobian(self) -> None:
     """Compute the frame Jacobian."""
+    if self._env.sim.cfg.backend == "classic":
+      model = self._env.sim.mj_model
+      data = self._env.sim.data
+      self._jacp_torch, self._jacr_torch = _jac_torch(
+        data.cdof,
+        data.subtree_com,
+        model.dof_bodyid,
+        model.body_rootid,
+        model.body_parentid,
+        self._point_torch,
+        self._body_id,
+      )
+      return
     with wp.ScopedDevice(self._env.sim.wp_device):
       mjwarp.jac(
         self._env.sim.wp_model,
