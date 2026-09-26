@@ -52,6 +52,13 @@ from test_classic_raycast_core import (
   _static_mesh_entity,
 )
 
+# qd 后端依赖可选的 quadrants/qd-render-poc：未安装时整文件跳过（回退路径由
+# 其余 raycast 测试在无 qd 环境下天然覆盖）。
+pytestmark = pytest.mark.skipif(
+  not raycast_qd.is_available(),
+  reason="quadrants/qd-render-poc 未安装（可选依赖）",
+)
+
 # ---------------------------------------------------------------------------
 # 场景。
 # ---------------------------------------------------------------------------
