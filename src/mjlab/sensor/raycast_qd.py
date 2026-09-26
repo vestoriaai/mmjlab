@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from typing import Any
 
 import mujoco
@@ -136,6 +137,38 @@ def scene_has_qd_only_types(mj_model: mujoco.MjModel) -> bool:
     int(mujoco.mjtGeom.mjGEOM_MESH),
   }
   return any(int(t) in supported for t in mj_model.geom_type)
+
+
+def try_build_context(mj_model: mujoco.MjModel, sensor: Any, data: Any):
+  """Build a QdRaycastContext per ``sensor.cfg.raycast_backend``; None = torch.
+
+  ``"auto"`` selects qd when it is importable and the scene contains geometry
+  the torch core ignores (mesh/analytic primitives) — plane/hfield scenes keep
+  the torch fast path (faster at the relevant loads, and pins the hfield
+  non-vertical raise). ``"qd"`` forces qd, warning and returning None when
+  unavailable; ``"torch"`` always returns None.
+  """
+  backend = sensor.cfg.raycast_backend
+  if backend == "torch":
+    return None
+  if not is_available():
+    if backend == "qd":
+      warnings.warn(
+        "raycast_backend='qd' requires the optional quadrants extra and the "
+        "qd-render-poc library; falling back to torch.",
+        RuntimeWarning,
+      )
+    return None
+  if backend == "auto" and not scene_has_qd_only_types(mj_model):
+    return None
+  try:
+    return QdRaycastContext(mj_model, sensor, data)
+  except Exception as e:
+    warnings.warn(
+      f"qd raycast backend unavailable ({e}); falling back to torch.",
+      RuntimeWarning,
+    )
+    return None
 
 
 def _has_dynamic_geom(mj_model: mujoco.MjModel) -> bool:

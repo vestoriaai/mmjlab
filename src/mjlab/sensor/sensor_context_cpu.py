@@ -10,7 +10,6 @@ used by :meth:`mjlab.sim.classic.ClassicSimulation.sense`.
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING
 
 import torch
@@ -42,8 +41,9 @@ class SensorContextCPU:
 
     self._raycast_ctxs: dict[str, RaycastCoreContext | raycast_qd.QdRaycastContext] = {}
     for sensor in self.raycast_sensors:
-      self._raycast_ctxs[sensor.cfg.name] = self._build_raycast_context(
-        mj_model, sensor, data
+      self._raycast_ctxs[sensor.cfg.name] = (
+        raycast_qd.try_build_context(mj_model, sensor, data)
+        or RaycastCoreContext(mj_model, sensor, data)
       )
 
     # Async camera rendering (CameraSensorCfg.async_render) is opt-in per
@@ -58,34 +58,6 @@ class SensorContextCPU:
       sensor.set_context(self)
     for sensor in self.raycast_sensors:
       sensor.set_context(self)
-
-  def _build_raycast_context(
-    self, mj_model: mujoco.MjModel, sensor: RayCastSensor, data
-  ):
-    """Select the raycast context by ``raycast_backend`` (stage 1B).
-
-    ``"auto"`` selects the qd backend when quadrants is importable and the
-    scene contains geometry the torch core ignores (mesh/analytic
-    primitives); plane/hfield scenes keep the torch fast path. ``"qd"`` /
-    ``"torch"`` force one path; a qd context that cannot be constructed
-    (missing optional deps, no usable arch) falls back to torch.
-    """
-    backend = sensor.cfg.raycast_backend
-    if backend == "auto":
-      backend = (
-        "qd"
-        if raycast_qd.is_available() and raycast_qd.scene_has_qd_only_types(mj_model)
-        else "torch"
-      )
-    if backend == "qd":
-      try:
-        return raycast_qd.QdRaycastContext(mj_model, sensor, data)
-      except Exception as e:
-        warnings.warn(
-          f"qd raycast backend unavailable ({e}); falling back to torch.",
-          RuntimeWarning,
-        )
-    return RaycastCoreContext(mj_model, sensor, data)
 
   def _build_camera_context(self, mj_model: mujoco.MjModel):
     """Select the sync camera context by ``render_backend`` and wrap it in
