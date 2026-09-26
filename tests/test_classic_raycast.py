@@ -221,7 +221,10 @@ def test_classic_sense_perf_256():
   （标准稳态基准做法，滤掉机器负载抖动；内核本身 ~0.21ms，抖动来自
   线程池竞争而非被测代码）。
   """
+  from conftest import require_quiet_machine
   from mjlab.sensor import raycast_cpu
+
+  require_quiet_machine()
 
   scene, sim = _make("classic", num_envs=256, sensors=(_terrain_cfg(),))
   sim.reset()

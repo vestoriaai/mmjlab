@@ -535,6 +535,9 @@ def test_perf_lidar_256x720():
   测量协议（沿用 F-track）：5 块 × 每块 30 次，取全部采样最小值（min 对代码
   确定性成本无噪声；共享机器桌面负载 ±15% 中位数抖动）。
   """
+  from conftest import require_quiet_machine
+
+  require_quiet_machine()
   verts, faces = _crate_verts_faces(n=13)
   assert len(faces) >= 2028
   crate = _mesh_entity(

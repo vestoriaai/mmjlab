@@ -30,6 +30,27 @@ def get_test_device() -> str:
   return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+# 共享机器 perf 门槛守卫：桌面/协作进程负载会以 ±15%~50% 污染微基准，
+# 门槛（0.3ms/0.15ms 等）只在空闲窗口断言；持续繁忙则 skip，不假失败。
+# 语义同 test_classic_camera_mjwarp 的空闲窗口测量协议 / CUDA-skip。
+PERF_LOAD_LIMIT = (os.cpu_count() or 1) * 0.5
+
+
+def require_quiet_machine(max_wait_s: float = 60.0) -> None:
+  """等待 1 分钟负载降到 PERF_LOAD_LIMIT 以下；超时仍未降则 skip 当前测试。"""
+  import time
+
+  if os.getloadavg()[0] <= PERF_LOAD_LIMIT:
+    return
+  deadline = time.perf_counter() + max_wait_s
+  while os.getloadavg()[0] > PERF_LOAD_LIMIT and time.perf_counter() < deadline:
+    time.sleep(1.0)
+  if os.getloadavg()[0] > PERF_LOAD_LIMIT:
+    pytest.skip(
+      f"机器持续繁忙（load > {PERF_LOAD_LIMIT:.0f}），性能门槛在空闲机器上断言"
+    )
+
+
 @pytest.fixture
 def fixtures_dir() -> Path:
   """Path to test fixtures directory."""

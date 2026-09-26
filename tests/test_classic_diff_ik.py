@@ -169,6 +169,9 @@ def test_classic_diff_ik_action_runs():
 
 def test_jac_torch_perf_256():
   """性能门槛：_jac_torch ≤ 0.15ms @B=256（humanoid 模型）。"""
+  from conftest import require_quiet_machine
+
+  require_quiet_machine()
   import os
 
   from mjlab.envs.mdp.actions.differential_ik import _jac_torch
