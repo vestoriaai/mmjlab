@@ -473,6 +473,104 @@ def test_qd_aligns_mj_ray(scene_name: str, mode_idx: int):
     assert stats["max_rel"] <= 1e-4, f"rel {stats['max_rel']:.2e} > 1e-4"
 
 
+def test_qd_degenerate_edge_graze_exempted():
+  """精确过棱射线族（测度零退化）：qd 与 mj_ray 的分歧必须全部被 1A 分类法
+  豁免（mesh-edge-graze），证明豁免机制真实闭环（非摆设）。
+
+  射线束穿过旋转 crate 朝向传感器的前竖棱（±0.5mm 垂直抖动 + 精确过棱），
+  与 1A T3 edge_graze 同方法论。
+  """
+  scene, sim = _build_and_sense(2, _mesh_entities(), (_patterns("scan")[2],))
+  ctx = sim._sensor_context._raycast_ctxs["scan"]
+  model = sim.mj_model
+  scratch = mujoco.MjData(model)
+  mujoco.mj_kinematics(model, scratch)
+
+  # crate 世界系竖棱：局部 (±h,±h,z) 经 geom 位姿变换，取 x 最大的竖棱
+  gid = model.geom("crate/crate_geom").id
+  gpos = np.asarray(scratch.geom_xpos[gid]).copy()
+  gmat = np.asarray(scratch.geom_xmat[gid]).reshape(3, 3).copy()
+  h = float(model.geom_size[gid][0])
+  corners = [
+    gpos + gmat @ np.array([sx * h, sy * h, 0.0]) for sx in (-1, 1) for sy in (-1, 1)
+  ]
+  base_pt = max(corners, key=lambda p: p[0])
+  top_pt = base_pt + gmat @ np.array([0.0, 0.0, 2 * h])
+  edge_mid = (base_pt + top_pt) / 2
+
+  sensor = scene["scan"]
+  origins = sensor._cached_world_origins.detach().double().numpy()
+  origin0 = origins[0, 0]  # 传感器帧原点附近
+  rng = np.random.default_rng(9)
+  rays_o, rays_d = [], []
+  for k in range(41):
+    for zt in np.linspace(base_pt[2] + 0.02, top_pt[2] - 0.02, 7):
+      target = edge_mid * 0 + np.array([edge_mid[0], edge_mid[1], zt])
+      perp = np.array([0.0, 1.0, 0.0]) if k % 2 == 0 else np.array([0.0, 0.0, 1.0])
+      amp = 0.0 if k == 40 else (k % 7 + 1) * 5e-4 * (1 if k % 3 else -1)
+      target = target + perp * amp
+      o = origin0 + rng.uniform(-0.02, 0.02, 3)
+      dvec = target - o
+      rays_o.append(o)
+      rays_d.append(dvec / np.linalg.norm(dvec))
+  rays_o = np.asarray(rays_o)
+  rays_d = np.asarray(rays_d)
+
+  o_t = torch.from_numpy(rays_o[None].astype(np.float32)).expand(2, -1, -1)
+  d_t = torch.from_numpy(rays_d[None].astype(np.float32)).expand(2, -1, -1)
+  dist, normals, _ = ctx.closest_hit(o_t.contiguous(), d_t.contiguous())
+  dist = dist[0].double().numpy()
+  normals = normals[0].double().numpy()
+
+  geomid_buf = np.zeros(1, dtype=np.int32)
+  normal_buf = np.zeros(3)
+  mesh_edge_cache: dict[int, np.ndarray] = {}
+  mism, exempt = 0, 0
+  # 与传感器一致：排除自身 body（射线起点在自己的 base box 内，mj_ray 无排除
+  # 语义时会先命中它）。
+  bodyexclude = ctx._frame_body_exclude[0]
+  for i in range(len(rays_o)):
+    ref = mujoco.mj_ray(
+      model,
+      scratch,
+      rays_o[i],
+      rays_d[i],
+      None,
+      True,
+      bodyexclude,
+      geomid_buf,
+      normal_buf,
+    )
+    gd = float(dist[i])
+    if (ref >= 0) != (gd >= 0):
+      reason = None
+      if ref >= 0:
+        pg = gpos  # 命中在 crate 上：分类用 crate 位姿
+        reason = _degenerate_reason(
+          model, gid, pg, gmat, rays_o[i], rays_d[i], ref, mesh_edge_cache
+        )
+      if reason:
+        exempt += 1
+      else:
+        mism += 1
+    elif gd >= 0:
+      rel = abs(gd - ref) / max(abs(ref), 1e-9)
+      if rel > 1e-4:
+        reason = _degenerate_reason(
+          model, gid, gpos, gmat, rays_o[i], rays_d[i], ref, mesh_edge_cache
+        )
+        if reason:
+          exempt += 1
+        else:
+          mism += 1
+  print(
+    f"\n[edge-graze] rays={len(rays_o)} mismatch={mism} exempt={exempt} "
+    f"(edges checked: {len(mesh_edge_cache.get(gid, []))})"
+  )
+  assert mism == 0, f"非退化分歧 {mism} 条"
+  assert exempt >= 1, "精确过棱射线族应触发至少一次豁免"
+
+
 # ---------------------------------------------------------------------------
 # 跨后端：qd vs torch。
 # ---------------------------------------------------------------------------
