@@ -195,10 +195,14 @@ def test_no_hit_semantics():
   "pattern",
   [
     PinholeCameraPatternCfg(width=4, height=4),
-    RingPatternCfg.single_ring(radius=0.1, num_samples=4),
+    RingPatternCfg.single_ring(radius=0.1, num_samples=4, direction=(1.0, 0.0, 0.0)),
   ],
 )
-def test_classic_rejects_non_grid_patterns(pattern):
+def test_classic_hfield_still_requires_vertical_rays(pattern):
+  """非 Grid 模式已走通用核心（R1），但 hfield 斜射线限制保留：显式 raise。
+
+  正向覆盖（三种模式无 hfield 场景下工作）见 test_classic_raycast_core.py。
+  """
   sensors = (
     RayCastSensorCfg(
       name="scan",
@@ -206,7 +210,7 @@ def test_classic_rejects_non_grid_patterns(pattern):
       pattern=pattern,
     ),
   )
-  with pytest.raises(NotImplementedError, match="GridPattern"):
+  with pytest.raises(NotImplementedError, match="vertical"):
     _build_and_sense("classic", sensors=sensors)
 
 

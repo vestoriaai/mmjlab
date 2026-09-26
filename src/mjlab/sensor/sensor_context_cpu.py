@@ -2,7 +2,8 @@
 
 Drop-in counterpart of :class:`mjlab.sensor.sensor_context.SensorContext`
 for ``backend='classic'``: wires raycast and camera sensors to CPU
-implementations (torch height scans and ``mujoco.Renderer``) instead of the
+implementations (the general torch ray-intersection core in
+:mod:`mjlab.sensor.raycast_core` and ``mujoco.Renderer``) instead of the
 mujoco_warp render pipeline, and exposes the same ``sense()`` entry point
 used by :meth:`mjlab.sim.classic.ClassicSimulation.sense`.
 """
@@ -15,8 +16,7 @@ import torch
 
 from mjlab.sensor import raycast_cpu
 from mjlab.sensor.camera_cpu import AsyncCpuCameraContext, CpuCameraContext
-from mjlab.sensor.raycast_cpu import CpuRaycastContext
-from mjlab.sensor.raycast_sensor import GridPatternCfg
+from mjlab.sensor.raycast_core import RaycastCoreContext
 
 if TYPE_CHECKING:
   import mujoco
@@ -39,15 +39,9 @@ class SensorContextCPU:
     self.camera_sensors = sorted(camera_sensors, key=lambda s: s.camera_idx)
     self.raycast_sensors = list(raycast_sensors)
 
-    self._raycast_ctxs: dict[str, CpuRaycastContext] = {}
+    self._raycast_ctxs: dict[str, RaycastCoreContext] = {}
     for sensor in self.raycast_sensors:
-      if not isinstance(sensor.cfg.pattern, GridPatternCfg):
-        raise NotImplementedError(
-          f"CPU backend supports GridPatternCfg only for raycast sensors; "
-          f"sensor '{sensor.cfg.name}' uses "
-          f"{type(sensor.cfg.pattern).__name__}. Use backend='warp'."
-        )
-      self._raycast_ctxs[sensor.cfg.name] = CpuRaycastContext(mj_model, sensor, data)
+      self._raycast_ctxs[sensor.cfg.name] = RaycastCoreContext(mj_model, sensor, data)
 
     # Async camera rendering (CameraSensorCfg.async_render) is opt-in per
     # sensor; if any sensor opts in, all cameras render on the background
@@ -112,7 +106,7 @@ class SensorContextCPU:
     for sensor in self.raycast_sensors:
       ctx = self._raycast_ctxs[sensor.cfg.name]
       _, _, origins, directions = raycast_cpu.compute_world_rays(sensor)
-      distances, normals_w = ctx.height_scan(origins, directions)
+      distances, normals_w, _ = ctx.closest_hit(origins, directions)
       raycast_cpu.finalize(sensor, distances, normals_w, origins, directions)
 
     if self._camera_ctx is not None:
