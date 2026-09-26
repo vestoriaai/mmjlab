@@ -71,6 +71,7 @@ class CpuCameraContext:
     states: dict[str, np.ndarray],
     num_envs: int,
     out: list[torch.Tensor | None],
+    depth_out: list[torch.Tensor | None] | None = None,
   ) -> None:
     """Render one frame batch from per-field ``[num_envs, ...]`` state arrays.
 
@@ -78,8 +79,11 @@ class CpuCameraContext:
     (allocated on shape mismatch). Called on the main thread by :meth:`render`
     and on the render thread by :class:`AsyncCpuCameraContext`; the mujoco
     resources used here (scratch ``MjData``, lazily created ``Renderer``s) are
-    touched by one thread at a time only.
+    touched by one thread at a time only. ``depth_out`` exists for interface
+    parity with render backends that support depth; this GL backend does not
+    and ignores it.
     """
+    del depth_out
     model = self._mj_model
     scratch = self._scratch
     for i, sensor in enumerate(self.camera_sensors):
@@ -198,15 +202,17 @@ class AsyncCpuCameraContext:
   _FIRST_FRAME_TIMEOUT_S = 30.0
   _JOIN_TIMEOUT_S = 10.0
 
-  def __init__(self, mj_model: mujoco.MjModel, camera_sensors) -> None:
+  def __init__(self, mj_model: mujoco.MjModel, camera_sensors, inner=None) -> None:
     # Rendering internals of the wrapped context (scratch MjData, lazily
-    # created Renderers) are owned by the render thread from here on.
-    self._inner = CpuCameraContext(mj_model, camera_sensors)
+    # created Renderers / shadow warp scenes) are owned by the render thread
+    # from here on. `inner` injects an alternative sync context (e.g. the
+    # mjwarp render backend); default is the GL context.
+    self._inner = inner if inner is not None else CpuCameraContext(mj_model, camera_sensors)
     self.camera_sensors = self._inner.camera_sensors
 
     self._frame_id = 0
     self._task: tuple[int, int, dict[str, np.ndarray]] | None = None
-    self._latest: tuple[int, list[torch.Tensor]] | None = None
+    self._latest: tuple[int, list[torch.Tensor], list[torch.Tensor] | None] | None = None
     self._stop = False
     self._closed = False
     self._thread_error: BaseException | None = None
@@ -257,10 +263,19 @@ class AsyncCpuCameraContext:
     return latest[1][self._sensor_index(cam_idx)]
 
   def get_depth(self, cam_idx: int) -> torch.Tensor:
-    raise NotImplementedError(
-      f"Depth rendering is not supported by the classic backend (camera "
-      f"'{self._sensor(cam_idx).cfg.name}'); use backend='warp'."
-    )
+    if not getattr(self._inner, "supports_depth", False):
+      raise NotImplementedError(
+        f"Depth rendering is not supported by the classic backend (camera "
+        f"'{self._sensor(cam_idx).cfg.name}'); use backend='warp'."
+      )
+    self._check_open()
+    latest = self._latest
+    if latest is None:
+      raise RuntimeError(
+        "No async camera frame available yet; call sim.sense() before "
+        "reading camera data."
+      )
+    return latest[2][self._sensor_index(cam_idx)]
 
   def get_segmentation(self, cam_idx: int) -> torch.Tensor:
     raise NotImplementedError(
@@ -363,9 +378,14 @@ class AsyncCpuCameraContext:
           frame_id, num_envs, states = self._task
           self._task = None
         outputs: list[torch.Tensor | None] = [None] * len(self.camera_sensors)
-        self._inner._render_states(states, num_envs, outputs)
+        depth_outputs = (
+          [None] * len(self.camera_sensors)
+          if getattr(self._inner, "supports_depth", False)
+          else None
+        )
+        self._inner._render_states(states, num_envs, outputs, depth_outputs)
         with self._done_cond:
-          self._latest = (frame_id, outputs)
+          self._latest = (frame_id, outputs, depth_outputs)
           self._done_cond.notify_all()
     except BaseException as exc:  # surfaced to sense()/get_rgb callers
       with self._done_cond:
@@ -379,12 +399,21 @@ class AsyncCpuCameraContext:
       self._close_renderers()
 
   def _close_renderers(self) -> None:
-    for renderer in list(self._inner._renderers.values()):
+    # GL renderers are thread-affine and live on self._inner._renderers;
+    # other inner contexts (mjwarp) shut down through their own close().
+    for renderer in getattr(self._inner, "_renderers", {}).values():
       try:
         renderer.close()
       except Exception:
         pass
-    self._inner._renderers.clear()
+    if hasattr(self._inner, "_renderers"):
+      self._inner._renderers.clear()
+    close = getattr(self._inner, "close", None)
+    if close is not None:
+      try:
+        close()
+      except Exception:
+        pass
 
   def _sensor(self, cam_idx: int):
     for sensor in self.camera_sensors:

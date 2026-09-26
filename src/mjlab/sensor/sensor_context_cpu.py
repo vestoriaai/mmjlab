@@ -54,16 +54,40 @@ class SensorContextCPU:
     # thread (each frame renders every sensor anyway).
     self._camera_ctx = None
     if self.camera_sensors:
-      if any(s.cfg.async_render for s in self.camera_sensors):
-        self._camera_ctx = AsyncCpuCameraContext(mj_model, self.camera_sensors)
-      else:
-        self._camera_ctx = CpuCameraContext(mj_model, self.camera_sensors)
+      self._camera_ctx = self._build_camera_context(mj_model)
 
     # Wire up sensors to use this context.
     for sensor in self.camera_sensors:
       sensor.set_context(self)
     for sensor in self.raycast_sensors:
       sensor.set_context(self)
+
+  def _build_camera_context(self, mj_model: mujoco.MjModel):
+    """Select the sync camera context by ``render_backend`` and wrap it in
+    the async render thread when any sensor opts in.
+
+    ``"auto"`` uses the mjwarp batch renderer when importable (it is a hard
+    dependency of the camera sensor module, so effectively always), falling
+    back to GL; ``"gl"`` / ``"mjwarp"`` force one path.
+    """
+    from mjlab.sensor.render_mjwarp import MjwarpCameraContext, is_available
+
+    backends = {s.cfg.render_backend for s in self.camera_sensors}
+    if len(backends) > 1:
+      raise ValueError(
+        "All camera sensors must share the same render_backend; got "
+        f"{sorted(backends)}."
+      )
+    backend = backends.pop()
+    if backend == "auto":
+      backend = "mjwarp" if is_available() else "gl"
+    if backend == "mjwarp":
+      inner = MjwarpCameraContext(mj_model, self.camera_sensors)
+    else:
+      inner = CpuCameraContext(mj_model, self.camera_sensors)
+    if any(s.cfg.async_render for s in self.camera_sensors):
+      return AsyncCpuCameraContext(mj_model, self.camera_sensors, inner=inner)
+    return inner
 
   @property
   def has_cameras(self) -> bool:
