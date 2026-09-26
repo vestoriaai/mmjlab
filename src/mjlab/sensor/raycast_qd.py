@@ -20,8 +20,10 @@ Design (probed on Metal, see docs/results/worklog-1B.md):
   ``.cpu()`` materializes the interleaved (N, 4) [dist, nx, ny, nz] block
   (~4x faster than ``to_numpy`` on Metal). Strided views into that block are
   returned as the distance/normal tensors.
-- **Exact cross-environment dedup**: when all envs share bit-identical frame
-  and geom poses, one world is launched and outputs tiled.
+- **Exact cross-environment dedup**: when every env equals env 0 translated
+  by one constant offset (mjlab's grid layout) with bitwise-equal rotations,
+  one world is launched and outputs tiled (translation-invariant up to f32
+  rounding).
 - ``quadrants`` / ``qd_render_poc`` are **optional dependencies**: every
   entry point is import-guarded and the context construction falls back to
   the torch core (see ``sensor_context_cpu``).
