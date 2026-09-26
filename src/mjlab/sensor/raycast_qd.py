@@ -273,7 +273,7 @@ class QdRaycastContext:
     # Last-uploaded host copies per (kind, worlds): each upload carries a
     # ~0.2ms fixed cost on Metal, so skip no-op uploads when the host arrays
     # are unchanged (the common case for repeated reads of one sim state).
-    self._host_cache: dict[tuple[str, int], np.ndarray] = {}
+    self._host_cache: dict[tuple[int, int], np.ndarray] = {}
 
   def _upload_if_changed(
     self,
