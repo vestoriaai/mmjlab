@@ -87,10 +87,11 @@ def _default_workers() -> int:
       return max(1, int(override))
     except ValueError:
       pass
-  # One render launch is single-threaded, so give it idle cores; leave
-  # headroom for the training process (physics, torch) and this process's own
-  # orchestrating thread.
-  return max(1, min(4, (os.cpu_count() or 1) // 3))
+  # One render launch is single-threaded, so give it idle cores. Capped at 6:
+  # beyond that the per-frame IPC and diminishing traversal wins cancel out.
+  # Leaves headroom for the training process (physics, torch) and this
+  # process's own orchestrating thread; MJLAB_RENDER_WORKERS overrides.
+  return max(1, min(6, (os.cpu_count() or 1) // 2))
 
 
 def is_available() -> bool:
@@ -231,6 +232,17 @@ class _WarpScene:
 
 def _serve_worker(scene: _WarpScene, conn) -> None:
   """Loop body for a forked render worker owning one :class:`_WarpScene`."""
+  import gc
+
+  # The fork inherits the parent's whole heap as garbage. If the child's GC
+  # collects any of it, C++ objects with attached worker pools (mjbatch,
+  # torch) run their destructors and abort on threads that do not exist in
+  # the child ("thread::join failed"). Freeze what came over the fork (never
+  # collected, no full-collection pass) and leave collection off for the
+  # worker's lifetime; the child is allocation-bounded and exits when the
+  # parent closes the pipe.
+  gc.freeze()
+  gc.disable()
   try:
     while True:
       poses = conn.recv()
@@ -245,6 +257,10 @@ def _serve_worker(scene: _WarpScene, conn) -> None:
       conn.send(("error", traceback.format_exc()))
     except Exception:
       pass
+  # Leave without interpreter finalization: inherited C++ state (mjbatch /
+  # torch worker pools) aborts in their exit handlers on threads that do not
+  # exist post-fork. The pipe is closed; the parent has everything it needs.
+  os._exit(0)
 
 
 class MjwarpCameraContext:
