@@ -331,9 +331,10 @@ class QdRaycastContext:
     with RayCastData miss semantics (``-1`` / ``0``); hit position is derived
     by ``raycast_cpu.finalize`` from the cached world rays.
 
-    ``dedup`` enables exact cross-environment deduplication: when all envs
-    share bit-identical frame and geom poses, one world is launched and the
-    outputs tiled (exact, not approximate).
+    ``dedup`` enables exact cross-environment deduplication: when every env
+    equals env 0 translated by one constant offset (mjlab's grid layout) and
+    rotations match bitwise, one world is launched and the outputs tiled
+    (translation-invariant up to f32 rounding, ~1e-7 rel).
     """
     qd = self._mods["qd"]
     frame_pos = sensor._cached_frame_pos  # [B, F, 3]
@@ -414,14 +415,6 @@ class QdRaycastContext:
     if not bool((gd == fd).all()):
       return False  # scene shift must equal the frame shift (static geoms etc.)
     return bool((xmat == xmat[0:1]).all())
-
-  def _poses_identical(self) -> bool:
-    """Whether every env's geom poses equal env 0's (exact dedup gate)."""
-    data = self._data
-    xpos, xmat = data.geom_xpos, data.geom_xmat
-    if xpos.dim() == 2:
-      return True
-    return bool((xpos == xpos[:, 0:1]).all()) and bool((xmat == xmat[:, 0:1]).all())
 
   def _read_out(self, qd_out, worlds: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Device (W*N,4) block -> (distances [W,N], normals [W,N,3]) CPU views."""
