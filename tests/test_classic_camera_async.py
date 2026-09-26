@@ -53,6 +53,7 @@ def _make(num_envs: int, height: int = 84, width: int = 84, async_render: bool =
     width=width,
     height=height,
     data_types=("rgb",),
+    render_backend="gl",
     async_render=async_render,
   )
   entities = {"world": EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(SCENE_XML))}

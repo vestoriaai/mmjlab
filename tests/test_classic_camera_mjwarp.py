@@ -95,6 +95,17 @@ def _make(
 # ---------------------------------------------------------------------------
 
 
+def _apply_golden_visuals(mjm: mujoco.MjModel) -> None:
+  """Reapply the golden scenes' visual settings post-compile.
+
+  mjlab's spec compile drops the XML ``<visual>`` element (headlight back on,
+  GL MSAA back to 4x); these two settings are load-bearing for tight
+  cross-renderer alignment (see tests/golden/generate_golden.py header).
+  """
+  mjm.vis.quality.offsamples = 0
+  mjm.vis.headlight.active = 0
+
+
 def _build_from_golden(data):
   from mjlab.entity import EntityCfg
   from mjlab.scene import Scene, SceneCfg
@@ -107,7 +118,7 @@ def _build_from_golden(data):
   cam_cfgs = tuple(
     CameraSensorCfg(
       name=f"cam_{i}",
-      camera_name=f"world/{name}",
+      camera_name=name,  # npz 存的是编译后模型的相机名
       width=width,
       height=height,
       data_types=("rgb", "depth"),
@@ -132,15 +143,17 @@ def _build_from_golden(data):
     model=model,
     device="cpu",
   )
+  _apply_golden_visuals(sim.mj_model)
   scene.initialize(sim.mj_model, sim.model, sim.data)
   sim.set_sensor_context(scene.sensor_context)
 
-  # 固定状态集 → 派生场刷新（不 step，黄金帧按同状态渲染）。
-  sim.data.qpos[:] = torch.from_numpy(data["qpos"])
-  sim.data.qvel[:] = torch.from_numpy(data["qvel"])
-  sim.data.act[:] = torch.from_numpy(data["act"])
-  sim.data.mocap_pos[:] = torch.from_numpy(data["mocap_pos"])
-  sim.data.mocap_quat[:] = torch.from_numpy(data["mocap_quat"])
+  # 固定状态集 → 派生场刷新（不 step，黄金帧按同状态渲染）。mjlab 编译可能
+  # 追加 raw XML 没有的字段（如 mocap），形状一致才覆盖。
+  for name in ("qpos", "qvel", "act", "mocap_pos", "mocap_quat"):
+    src = torch.from_numpy(data[name])
+    dst = getattr(sim.data, name)
+    if dst.shape == src.shape:
+      dst[:] = src
   sim.forward()
   return scene, sim
 
@@ -346,6 +359,26 @@ _NEEDS_CORES = pytest.mark.skipif(
 )
 
 
+def _measure_sense(sim, rounds: int, samples: int) -> float:
+  """min-of-samples × rounds sense() 耗时（ms），并打印测量时负载。
+
+  本仓库各 perf 门槛均为共享机器上的 wall-clock 口径：协作进程（同仓库其
+  他 track 的测试）会造成 ±80% 抖动，多轮取 min 是稳定的成本估计。
+  """
+  best = float("inf")
+  for _ in range(rounds):
+    times = []
+    for _ in range(samples):
+      t0 = time.perf_counter()
+      sim.sense()
+      times.append((time.perf_counter() - t0) * 1e3)
+    best = min(best, min(times))
+    time.sleep(0.2)
+  load = os.getloadavg()[0]
+  print(f"(load avg {load:.1f} / {os.cpu_count()} cores)")
+  return best
+
+
 @_NEEDS_CORES
 def test_perf_sync_mjwarp_64envs():
   """同步 mjwarp 渲染 ≤ 70ms @64envs×84×84（多进程分片，默认 worker 数）。"""
@@ -354,13 +387,8 @@ def test_perf_sync_mjwarp_64envs():
     sim.reset()
     sim.step()
     sim.sense()  # 首帧含 put_model/编译等一次性成本
-    times = []
-    for _ in range(5):
-      t0 = time.perf_counter()
-      sim.sense()
-      times.append((time.perf_counter() - t0) * 1e3)
-    best = min(times)
-    print(f"\nsync mjwarp render @B=64,84x84: best {best:.1f} ms (gate 70ms)")
+    best = _measure_sense(sim, rounds=3, samples=5)
+    print(f"sync mjwarp render @B=64,84x84: best {best:.1f} ms (gate 70ms)")
     assert best <= 70.0, f"mjwarp 渲染 {best:.1f} ms 超门槛 70ms"
   finally:
     sim.close()
@@ -390,40 +418,42 @@ def test_perf_async_mjwarp_sense_latency():
 
 @_NEEDS_CORES
 def test_perf_async_mjwarp_throughput():
-  """async 渲染吞吐 ≥ 同步 mjwarp 路径 80%（async min ≤ 1.25 × sync min）。"""
+  """async 渲染吞吐 ≥ 同步 mjwarp 路径 80%（async min ≤ 1.25 × sync min）。
+
+  sync/async 交错采样（3 轮），使两侧覆盖相同的机器负载窗口——共享机器上
+  顺序测量会因负载突变产生假的吞吐比。
+  """
   scene_s, sim_s = _make(num_envs=64, async_render=False)
+  scene_a, sim_a = _make(num_envs=64, async_render=True)
   try:
     sim_s.reset()
     sim_s.step()
     sim_s.sense()
-    sync_times = []
-    for _ in range(5):
-      t0 = time.perf_counter()
-      sim_s.sense()
-      sync_times.append((time.perf_counter() - t0) * 1e3)
-    sync_best = min(sync_times)
-  finally:
-    sim_s.close()
-
-  scene_a, sim_a = _make(num_envs=64, async_render=True)
-  try:
     sim_a.reset()
     sim_a.forward()
     sim_a.sense()
     ctx = scene_a.sensor_context.camera_context
-    async_times = []
-    for _ in range(7):
-      k0 = ctx.latest_submitted_frame_id
-      t0 = time.perf_counter()
-      sim_a.sense()
-      ctx.wait_for_frame(k0 + 1, timeout=60.0)
-      async_times.append((time.perf_counter() - t0) * 1e3)
-    async_best = min(async_times)
-  finally:
-    sim_a.close()
 
-  print(f"\nmjwarp throughput @B=64: sync {sync_best:.1f} ms | "
-        f"async {async_best:.1f} ms | ratio {async_best / sync_best:.2f}")
-  assert async_best <= 1.25 * sync_best, (
-    f"async {async_best:.1f} ms > 1.25 × sync {sync_best:.1f} ms（吞吐 <80%）"
-  )
+    sync_best = async_best = float("inf")
+    for _ in range(3):
+      for _ in range(5):
+        t0 = time.perf_counter()
+        sim_s.sense()
+        sync_best = min(sync_best, (time.perf_counter() - t0) * 1e3)
+      for _ in range(3):
+        k0 = ctx.latest_submitted_frame_id
+        t0 = time.perf_counter()
+        sim_a.sense()
+        ctx.wait_for_frame(k0 + 1, timeout=60.0)
+        async_best = min(async_best, (time.perf_counter() - t0) * 1e3)
+      time.sleep(0.2)
+
+    print(f"\nmjwarp throughput @B=64 (load {os.getloadavg()[0]:.1f}): "
+          f"sync {sync_best:.1f} ms | async {async_best:.1f} ms | "
+          f"ratio {async_best / sync_best:.2f}")
+    assert async_best <= 1.25 * sync_best, (
+      f"async {async_best:.1f} ms > 1.25 × sync {sync_best:.1f} ms（吞吐 <80%）"
+    )
+  finally:
+    sim_s.close()
+    sim_a.close()

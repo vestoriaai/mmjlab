@@ -1,8 +1,10 @@
 """Generate golden reference frames for classic-camera renderer parity (stage 0).
 
-Renders fixed state sets of three test scenes (primitives / mesh / hfield) with
+Builds three test scenes (primitives / mesh / hfield) through the same mjlab
+scene harness the tests use (so the reference model is the compiled model the
+pipeline actually renders), renders fixed per-env state sets with
 ``mujoco.Renderer`` (the mjr_ reference) and stores everything needed to
-rebuild and compare against them in ``tests/golden/*.npz``:
+rebuild and compare in ``tests/golden/*.npz``:
 
   xml          scene MJCF (str)
   cam_names    MuJoCo camera names used as sensors (ncam,)
@@ -10,14 +12,15 @@ rebuild and compare against them in ``tests/golden/*.npz``:
   qpos/qvel/act/mocap_pos/mocap_quat  per-env states (nenv, ...)
   rgb          reference RGB  (ncam, nenv, H, W, 3) uint8
   depth        reference depth (ncam, nenv, H, W) float32, metric planar depth
-               (mjr enable_depth_rendering; background pixels are 0)
+               (mjr enable_depth_rendering; background pixels are the zfar
+               sentinel)
 
 The scenes are aligned for tight cross-renderer tolerance (see
 docs/results/stage0-mjwarp-render.md): anti-aliasing off (offsamples=0, same
 convention as upstream mujoco_warp render_test mjr comparisons), headlight
 off, a single no-specular directional light. Reference frames are rendered
 from the raw state vectors (mj_kinematics + mj_comPos + mj_camlight in a
-scratch MjData), independent of any mjlab pipeline.
+scratch MjData), independent of the render pipeline under test.
 
 Usage: python tests/golden/generate_golden.py
 """
@@ -31,6 +34,7 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 import mujoco
 import numpy as np
+import torch
 
 HERE = pathlib.Path(__file__).parent
 NENV_DYNAMIC = 4  # scenes with a movable body: env w shifts its x by w*X_SHIFT
@@ -99,6 +103,41 @@ SCENES = {
 }
 
 
+def build_scene(xml: str, cam_names: list[str], width: int, height: int):
+  """Compile the scene through the mjlab harness (classic backend).
+
+  Mirrors the sensor builder in tests/test_classic_camera_mjwarp.py so the
+  reference model is the compiled model the pipeline renders.
+  """
+  from mjlab.entity import EntityCfg
+  from mjlab.scene import Scene, SceneCfg
+  from mjlab.sensor import CameraSensorCfg
+  from mjlab.sim.sim import SimulationCfg, make_simulation
+
+  cam_cfgs = tuple(
+    CameraSensorCfg(
+      name=f"cam_{i}",
+      camera_name=f"world/{name}",
+      width=width,
+      height=height,
+      data_types=("rgb", "depth"),
+      render_backend="gl",
+    )
+    for i, name in enumerate(cam_names)
+  )
+  entities = {"world": EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(xml))}
+  scene = Scene(
+    SceneCfg(num_envs=1, env_spacing=5.0, entities=entities, sensors=cam_cfgs),
+    "cpu",
+  )
+  model = scene.compile()
+  sim = make_simulation(
+    num_envs=1, cfg=SimulationCfg(backend="classic", njmax=20),
+    model=model, device="cpu",
+  )
+  return scene, sim
+
+
 def scene_states(mjm: mujoco.MjModel) -> dict[str, np.ndarray]:
   """Fixed per-env state vectors: env w shifts the free body x by w*X_SHIFT."""
   nenv = NENV_DYNAMIC if mjm.nq else 1
@@ -134,11 +173,11 @@ def render_reference(mjm: mujoco.MjModel, states: dict[str, np.ndarray]):
       mujoco.mj_kinematics(mjm, scratch)
       mujoco.mj_comPos(mjm, scratch)
       mujoco.mj_camlight(mjm, scratch)
-      for ci, cam_id in enumerate(range(mjm.ncam)):
+      for cam_id in range(mjm.ncam):
         renderer.update_scene(scratch, camera=cam_id)
-        rgb[ci, w] = renderer.render()
+        rgb[cam_id, w] = renderer.render()
         renderer.enable_depth_rendering()
-        depth[ci, w] = renderer.render()
+        depth[cam_id, w] = renderer.render()
         renderer.disable_depth_rendering()
   finally:
     renderer.close()
@@ -147,26 +186,40 @@ def render_reference(mjm: mujoco.MjModel, states: dict[str, np.ndarray]):
 
 def main() -> None:
   for tag, xml in SCENES.items():
-    mjm = mujoco.MjModel.from_xml_string(xml)
-    states = scene_states(mjm)
-    cam_names, rgb, depth = render_reference(mjm, states)
-    path = HERE / f"{tag}.npz"
-    np.savez_compressed(
-      path,
-      xml=xml,
-      cam_names=np.array(cam_names),
-      width=int(mjm.cam_resolution[0, 0]),
-      height=int(mjm.cam_resolution[0, 1]),
-      rgb=rgb,
-      depth=depth,
-      **states,
+    # First pass on the raw model to discover the camera set/resolution.
+    probe = mujoco.MjModel.from_xml_string(xml)
+    cam_names = [probe.camera(i).name for i in range(probe.ncam)]
+    scene, sim = build_scene(
+      xml, cam_names, int(probe.cam_resolution[0, 0]),
+      int(probe.cam_resolution[0, 1]),
     )
-    print(
-      f"{path.name}: {len(cam_names)} cams x {rgb.shape[1]} envs @"
-      f"{rgb.shape[3]}x{rgb.shape[2]}, non-black px "
-      f"{(rgb.sum(-1) > 0).mean() * 100:.1f}%, depth range "
-      f"[{depth[depth > 0].min():.2f}, {depth[depth > 0].max():.2f}]"
-    )
+    try:
+      mjm = sim.mj_model
+      # mjlab compile drops the XML <visual> element; reapply the
+      # alignment-critical settings so reference and pipeline models match.
+      mjm.vis.quality.offsamples = 0
+      mjm.vis.headlight.active = 0
+      states = scene_states(mjm)
+      cam_names, rgb, depth = render_reference(mjm, states)
+      path = HERE / f"{tag}.npz"
+      np.savez_compressed(
+        path,
+        xml=xml,
+        cam_names=np.array(cam_names),
+        width=int(mjm.cam_resolution[0, 0]),
+        height=int(mjm.cam_resolution[0, 1]),
+        rgb=rgb,
+        depth=depth,
+        **states,
+      )
+      print(
+        f"{path.name}: {len(cam_names)} cams x {rgb.shape[1]} envs @"
+        f"{rgb.shape[3]}x{rgb.shape[2]}, non-black px "
+        f"{(rgb.sum(-1) > 0).mean() * 100:.1f}%, depth range "
+        f"[{depth[depth > 0].min():.2f}, {depth[depth > 0].max():.2f}]"
+      )
+    finally:
+      sim.close()
 
 
 if __name__ == "__main__":

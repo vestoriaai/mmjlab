@@ -99,6 +99,12 @@ class CameraSensorCfg(SensorCfg):
   render thread and returns the most recently completed frame, keeping the
   render cost off the training hot path. Ignored by the Warp backend."""
 
+  render_backend: Literal["auto", "gl", "mjwarp"] = "auto"
+  """Classic backend only: renderer selection. ``"auto"`` uses the mjwarp
+  batch renderer when importable (default), falling back to GL; ``"gl"``
+  forces the per-environment ``mujoco.Renderer`` path; ``"mjwarp"`` forces
+  the batch renderer. Ignored by the Warp backend."""
+
   def __post_init__(self) -> None:
     valid = {"rgb", "depth", "segmentation"}
     invalid = {dt for dt in self.data_types if dt not in valid}

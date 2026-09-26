@@ -43,6 +43,7 @@ def _make(num_envs: int = 4, height: int = 84, width: int = 84):
     width=width,
     height=height,
     data_types=("rgb",),
+    render_backend="gl",
   )
   entities = {"world": EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(SCENE_XML))}
   scene = Scene(
@@ -128,6 +129,7 @@ def test_camera_rejects_depth_and_segmentation():
     width=32,
     height=24,
     data_types=("rgb", "depth"),
+    render_backend="gl",
   )
   entities = {"world": EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(SCENE_XML))}
   scene = Scene(
