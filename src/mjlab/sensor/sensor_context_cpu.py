@@ -62,11 +62,13 @@ class SensorContextCPU:
     """Select the sync camera context by ``render_backend`` and wrap it in
     the async render thread when any sensor opts in.
 
-    ``"auto"`` uses the mjwarp batch renderer when importable (it is a hard
-    dependency of the camera sensor module, so effectively always), falling
-    back to GL; ``"gl"`` / ``"mjwarp"`` force one path.
+    ``"auto"`` prefers the qd (Quadrants) batch renderer when importable,
+    then the mjwarp batch renderer, falling back to GL; ``"qd"`` /
+    ``"mjwarp"`` / ``"gl"`` force one path.
     """
     from mjlab.sensor.render_mjwarp import MjwarpCameraContext, is_available
+    from mjlab.sensor.render_qd import QdCameraContext
+    from mjlab.sensor.render_qd import is_available as qd_available
 
     backends = {s.cfg.render_backend for s in self.camera_sensors}
     if len(backends) > 1:
@@ -76,8 +78,10 @@ class SensorContextCPU:
       )
     backend = backends.pop()
     if backend == "auto":
-      backend = "mjwarp" if is_available() else "gl"
-    if backend == "mjwarp":
+      backend = "qd" if qd_available() else ("mjwarp" if is_available() else "gl")
+    if backend == "qd":
+      inner = QdCameraContext(mj_model, self.camera_sensors)
+    elif backend == "mjwarp":
       inner = MjwarpCameraContext(mj_model, self.camera_sensors)
     else:
       inner = CpuCameraContext(mj_model, self.camera_sensors)
