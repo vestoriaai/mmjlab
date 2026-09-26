@@ -419,6 +419,20 @@ class RayCastSensorCfg(SensorCfg):
   debug_vis: bool = False
   """Enable debug visualization."""
 
+  raycast_backend: Literal["auto", "torch", "qd"] = "auto"
+  """Intersection backend for the classic backend (stage 1B; ignored by the
+  warp backend, which always uses mujoco_warp ``rays``).
+
+  - "auto": use the qd backend when ``quadrants`` is importable and the scene
+    contains geometry the torch core ignores (mesh or analytic primitives
+    such as box/sphere); plane/hfield scenes keep the torch fast path.
+  - "qd": force the Quadrants kernel backend (requires the optional
+    ``quadrants`` extra and the qd-render-poc library; falls back to torch
+    with a warning when unavailable). Lifts the torch core's hfield
+    vertical-rays restriction.
+  - "torch": force the torch intersection core (pre-1B behavior).
+  """
+
   viz: VizCfg = field(default_factory=VizCfg)
   """Visualization settings."""
 

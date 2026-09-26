@@ -443,6 +443,12 @@ def test_mesh_on_parent_body_excluded():
     cfg = down_ring
     if not with_exclusion:
       cfg = dataclasses.replace(cfg, exclude_parent_body=False)
+    # Pin the torch core: the scenario assumes "no other geometry", but the
+    # robot's own base box geom IS intersected by the qd backend (mj_ray
+    # semantics — rays start inside the box and hit its bottom face at
+    # t≈0.05). The qd-path exclusion behavior is covered in
+    # test_classic_raycast_qd.py.
+    cfg = dataclasses.replace(cfg, raycast_backend="torch")
     scene, sim = _build_and_sense("classic", 2, {"robot": robot}, (cfg,))
     return scene["scan"].data
 

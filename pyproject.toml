@@ -94,6 +94,14 @@ docs = [
 [project.optional-dependencies]
 cu128 = ["torch>=2.7.0"]
 cpu = ["torch>=2.7.0"]
+# Stage 1B: optional Quadrants raycast backend (classic raycast_sensor
+# raycast_backend="qd"/auto). The validated 1A intersection library
+# qd-render-poc is a workspace sibling (../qd-render-poc); install it into the
+# environment separately (e.g. `uv pip install -e ../qd-render-poc`) — it is
+# import-guarded like quadrants and never a hard dependency.
+qd = [
+  "quadrants==1.3.1; python_version >= '3.12'",
+]
 
 [tool.uv]
 conflicts = [
