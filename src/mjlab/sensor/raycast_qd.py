@@ -231,13 +231,32 @@ class QdRaycastContext:
     self._q_max_dist = qd.ndarray(qd.f32, (1,))
     self._q_max_dist.from_numpy(np.array([self._max_distance], dtype=np.float32))
 
-    # Per-worlds-key device buffers; _pose_current[worlds] tracks whether the
-    # device pose copy matches the host (static scenes upload once).
+    # Per-worlds-key device buffers; _host_cache tracks the last-uploaded
+    # host copies so redundant uploads are skipped.
     self._q_frame_pose: dict[int, Any] = {}
     self._q_pose: dict[int, Any] = {}
     self._q_out: dict[tuple[int, int], Any] = {}
     self._q_stack: dict[tuple[int, int], Any] = {}
-    self._pose_current: set[int] = set()
+    # Last-uploaded host copies per (kind, worlds): each upload carries a
+    # ~0.2ms fixed cost on Metal, so skip no-op uploads when the host arrays
+    # are unchanged (the common case for repeated reads of one sim state).
+    self._host_cache: dict[tuple[str, int], np.ndarray] = {}
+
+  def _upload_if_changed(
+    self,
+    kind_map: dict[int, Any],
+    worlds: int,
+    qd_array,
+    host: np.ndarray,
+    force: bool = False,
+  ) -> None:
+    key = (id(kind_map), worlds)
+    cached = self._host_cache.get(key)
+    if force or cached is None or cached.shape != host.shape or not bool(
+      (cached == host).all()
+    ):
+      qd_array.from_numpy(np.ascontiguousarray(host, dtype=np.float32))
+      self._host_cache[key] = host
 
   # ------------------------------------------------------------------
   # Device buffer helpers.
@@ -275,9 +294,9 @@ class QdRaycastContext:
   def _geom_pose_array(self, worlds: int) -> np.ndarray | None:
     """Packed per-env geom poses [xpos(3), xmat(9)] as one (W*G, 12) array.
 
-    Returns None for fully static scenes at full batch (device copy is
-    already current); callers must then ensure the device copy is uploaded
-    once (see ``_pose_current``).
+    Returns None for fully static scenes at full batch (the caller uploads
+    the tiled template once; repeated identical uploads are skipped by the
+    host cache).
     """
     if self._static_scene:
       return None if worlds == self._nworld else self._static_pose(worlds)
@@ -328,9 +347,7 @@ class QdRaycastContext:
 
     worlds = B
     if dedup and B > 1:
-      same_frames = bool((frame_pos == frame_pos[0:1]).all()) and bool(
-        (rot == rot[0:1]).all())
-      if same_frames and (self._static_scene or self._poses_identical()):
+      if self._translation_equivalent(frame_pos, rot):
         worlds = 1
 
     fp32 = frame_pos.detach().reshape(B * F, 3).numpy().astype(np.float32)
@@ -342,14 +359,12 @@ class QdRaycastContext:
         np.concatenate([fp32[:F], fr32[:F]], axis=1))
 
     qd_frame_pose, qd_pose, qd_out, qd_stack = self._buffers(worlds)
-    qd_frame_pose.from_numpy(frame_pose)
+    self._upload_if_changed(self._q_frame_pose, worlds, qd_frame_pose, frame_pose)
 
     pose = self._geom_pose_array(worlds)
-    if pose is not None or worlds not in self._pose_current:
-      if pose is None:
-        pose = self._static_pose(worlds)
-      qd_pose.from_numpy(pose)
-      self._pose_current.add(worlds)
+    if pose is None:  # static scene, full batch: device copy already current
+      pose = self._static_pose(worlds)
+    self._upload_if_changed(self._q_pose, worlds, qd_pose, pose)
 
     self._mods["kernels"].ray_scene_pattern(
       qd_frame_pose, self._q_offsets, self._q_dirs0,
@@ -364,7 +379,41 @@ class QdRaycastContext:
       qd_out, qd_stack,
     )
     qd.sync()
-    return self._read_out(qd_out, worlds)
+    distances, normals = self._read_out(qd_out, worlds)
+    if worlds != B:  # dedup: tile env 0's outputs back to the full batch
+      distances = distances.repeat(B, 1)
+      normals = normals.repeat(B, 1, 1)
+    return distances, normals
+
+  def _translation_equivalent(self, frame_pos: torch.Tensor, rot: torch.Tensor) -> bool:
+    """Whether every env equals env 0 translated by a constant offset.
+
+    mjlab lays environments out on a grid: entities keep identical local
+    poses, so env w's frame poses and geom poses are env 0's shifted by one
+    per-env offset (until robot states diverge). Intersections are then
+    identical per env (up to f32 rounding of the shifted operands, ~1e-7
+    rel), so a single-world launch can serve the whole batch. Bitwise
+    equality of the *differences* is the check (shifting and unshifting in
+    f32 is not lossless).
+    """
+    if not bool((rot == rot[0:1]).all()):
+      return False
+    fd = frame_pos[:, 0, :] - frame_pos[0, 0, :]  # [B, 3]
+    if not bool(((frame_pos - frame_pos[0:1]) == fd[:, None, :]).all()):
+      return False
+    if self._static_scene:
+      # 静态几何逐 env 相同（不随 env 平移）→ 仅当帧也逐位相同才可去重。
+      return not bool(fd.any())
+    data = self._data
+    xpos, xmat = data.geom_xpos, data.geom_xmat
+    if xpos.dim() != 3:
+      return True
+    gd = xpos[:, 0, :] - xpos[0, 0, :]  # [B, 3] using geom 0 as the anchor
+    if not bool(((xpos - xpos[0:1]) == gd[:, None, :]).all()):
+      return False
+    if not bool((gd == fd).all()):
+      return False  # scene shift must equal the frame shift (static geoms etc.)
+    return bool((xmat == xmat[0:1]).all())
 
   def _poses_identical(self) -> bool:
     """Whether every env's geom poses equal env 0's (exact dedup gate)."""

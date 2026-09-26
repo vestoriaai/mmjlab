@@ -811,7 +811,11 @@ def test_perf_lidar_qd_metal_gate():
 
 
 def test_perf_lidar_qd_dedup_gate():
-  """静态去重口径 ≤ 1ms：跨环境位姿逐位相同 → 单 world launch + 平铺。"""
+  """去重口径 ≤ 1ms：跨环境平移等价 → 单 world launch + 平铺。
+
+  mjlab 环境按网格平移布局：全动态场景（crate+robot 均随体）下各 env 的
+  帧位姿/几何位姿逐 env 相差同一常量平移 → 命中逐 env 相同（f32 舍入内），
+  以 env-0 单 world launch 服务全批（含上传跳过：state 未变时不重复上传）。"""
   from conftest import require_quiet_machine
 
   require_quiet_machine()
