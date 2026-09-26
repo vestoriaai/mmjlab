@@ -41,10 +41,9 @@ class SensorContextCPU:
 
     self._raycast_ctxs: dict[str, RaycastCoreContext | raycast_qd.QdRaycastContext] = {}
     for sensor in self.raycast_sensors:
-      self._raycast_ctxs[sensor.cfg.name] = (
-        raycast_qd.try_build_context(mj_model, sensor, data)
-        or RaycastCoreContext(mj_model, sensor, data)
-      )
+      self._raycast_ctxs[sensor.cfg.name] = raycast_qd.try_build_context(
+        mj_model, sensor, data
+      ) or RaycastCoreContext(mj_model, sensor, data)
 
     # Async camera rendering (CameraSensorCfg.async_render) is opt-in per
     # sensor; if any sensor opts in, all cameras render on the background

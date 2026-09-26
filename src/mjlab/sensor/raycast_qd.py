@@ -62,8 +62,8 @@ _qd_init_failed = False
 def is_available() -> bool:
   """Whether the qd backend *could* be used (imports only; no device init)."""
   try:
-    import quadrants  # noqa: F401
     import qd_render_poc  # noqa: F401
+    import quadrants  # noqa: F401
   except ImportError:
     return False
   return True
@@ -73,7 +73,6 @@ def _modules() -> dict[str, Any]:
   global _qd_modules
   if _qd_modules is None:
     import quadrants
-    import qd_render_poc
     from qd_render_poc import bvh, kernels, raycast, scene
 
     _qd_modules = {
@@ -157,6 +156,7 @@ def try_build_context(mj_model: mujoco.MjModel, sensor: Any, data: Any):
         "raycast_backend='qd' requires the optional quadrants extra and the "
         "qd-render-poc library; falling back to torch.",
         RuntimeWarning,
+        stacklevel=1,
       )
     return None
   if backend == "auto" and not scene_has_qd_only_types(mj_model):
@@ -167,6 +167,7 @@ def try_build_context(mj_model: mujoco.MjModel, sensor: Any, data: Any):
     warnings.warn(
       f"qd raycast backend unavailable ({e}); falling back to torch.",
       RuntimeWarning,
+      stacklevel=1,
     )
     return None
 
@@ -236,7 +237,8 @@ class QdRaycastContext:
     # introspect the torch core's `mesh_colliders`).
     mesh_type = int(mujoco.mjtGeom.mjGEOM_MESH)
     self.mesh_colliders = [
-      g for g in range(mj_model.ngeom)
+      g
+      for g in range(mj_model.ngeom)
       if keep[g] and int(mj_model.geom_type[g]) == mesh_type
     ]
 
@@ -251,10 +253,12 @@ class QdRaycastContext:
     dirs = sensor._local_directions
     self._q_offsets = qd.ndarray(qd.f32, tuple(offsets.shape))
     self._q_offsets.from_numpy(
-      np.ascontiguousarray(offsets.detach().numpy(), dtype=np.float32))
+      np.ascontiguousarray(offsets.detach().numpy(), dtype=np.float32)
+    )
     self._q_dirs0 = qd.ndarray(qd.f32, tuple(dirs.shape))
     self._q_dirs0.from_numpy(
-      np.ascontiguousarray(dirs.detach().numpy(), dtype=np.float32))
+      np.ascontiguousarray(dirs.detach().numpy(), dtype=np.float32)
+    )
     self._q_geomgroup = qd.ndarray(qd.i32, (6,))
     self._q_geomgroup.from_numpy(np.full(6, 1, dtype=np.int32))
     self._q_flags = qd.ndarray(qd.i32, (3,))
@@ -285,8 +289,11 @@ class QdRaycastContext:
   ) -> None:
     key = (id(kind_map), worlds)
     cached = self._host_cache.get(key)
-    if force or cached is None or cached.shape != host.shape or not bool(
-      (cached == host).all()
+    if (
+      force
+      or cached is None
+      or cached.shape != host.shape
+      or not bool((cached == host).all())
     ):
       qd_array.from_numpy(np.ascontiguousarray(host, dtype=np.float32))
       self._host_cache[key] = host
@@ -302,10 +309,8 @@ class QdRaycastContext:
       from qd_render_poc.bvh import STACK_DEPTH
 
       self._q_out[key] = qd.ndarray(qd.f32, (worlds * self._num_rays, 4))
-      self._q_stack[key] = qd.ndarray(
-        qd.i32, (worlds * self._num_rays, STACK_DEPTH))
-      self._q_frame_pose[worlds] = qd.ndarray(
-        qd.f32, (worlds * self._num_frames, 12))
+      self._q_stack[key] = qd.ndarray(qd.i32, (worlds * self._num_rays, STACK_DEPTH))
+      self._q_frame_pose[worlds] = qd.ndarray(qd.f32, (worlds * self._num_frames, 12))
       self._q_pose[worlds] = qd.ndarray(qd.f32, (worlds * self._ngeom, 12))
     return (
       self._q_frame_pose[worlds],
@@ -318,10 +323,12 @@ class QdRaycastContext:
     """Template poses tiled per env, packed as (W*G, 12)."""
     pose = np.zeros((worlds * self._ngeom, 12), dtype=np.float32)
     pv = pose.reshape(worlds, self._ngeom, 12)
-    pv[:, :, 0:3] = self._scene.geom_xpos.reshape(self._ngeom, 3).astype(
-      np.float32)[None]
-    pv[:, :, 3:12] = self._scene.geom_xmat.reshape(self._ngeom, 9).astype(
-      np.float32)[None]
+    pv[:, :, 0:3] = self._scene.geom_xpos.reshape(self._ngeom, 3).astype(np.float32)[
+      None
+    ]
+    pv[:, :, 3:12] = self._scene.geom_xmat.reshape(self._ngeom, 9).astype(np.float32)[
+      None
+    ]
     return np.ascontiguousarray(pose)
 
   def _geom_pose_array(self, worlds: int) -> np.ndarray | None:
@@ -340,8 +347,10 @@ class QdRaycastContext:
       xpos = xpos.unsqueeze(0)
       xmat = xmat.unsqueeze(0)
     packed = torch.cat(
-      (xpos.reshape(self._nworld, self._ngeom, 3),
-       xmat.reshape(self._nworld, self._ngeom, 9)),
+      (
+        xpos.reshape(self._nworld, self._ngeom, 3),
+        xmat.reshape(self._nworld, self._ngeom, 9),
+      ),
       dim=-1,
     )
     if worlds != self._nworld:
@@ -375,9 +384,9 @@ class QdRaycastContext:
     B, F = frame_pos.shape[:2]
     assert B == self._nworld and F == self._num_frames
 
-    rot = sensor._compute_alignment_rotation(
-      frame_mat.reshape(B * F, 3, 3)
-    ).reshape(B, F, 3, 3)
+    rot = sensor._compute_alignment_rotation(frame_mat.reshape(B * F, 3, 3)).reshape(
+      B, F, 3, 3
+    )
 
     worlds = B
     if dedup and B > 1:
@@ -389,8 +398,7 @@ class QdRaycastContext:
     if worlds == B:
       frame_pose = np.ascontiguousarray(np.concatenate([fp32, fr32], axis=1))
     else:  # dedup: env 0 only
-      frame_pose = np.ascontiguousarray(
-        np.concatenate([fp32[:F], fr32[:F]], axis=1))
+      frame_pose = np.ascontiguousarray(np.concatenate([fp32[:F], fr32[:F]], axis=1))
 
     qd_frame_pose, qd_pose, qd_out, qd_stack = self._buffers(worlds)
     self._upload_if_changed(self._q_frame_pose, worlds, qd_frame_pose, frame_pose)
@@ -401,16 +409,34 @@ class QdRaycastContext:
     self._upload_if_changed(self._q_pose, worlds, qd_pose, pose)
 
     self._mods["kernels"].ray_scene_pattern(
-      qd_frame_pose, self._q_offsets, self._q_dirs0,
-      self._its.q_geom_type, self._its.q_geom_size, self._its.q_geom_group,
-      self._its.q_geom_bodyid, self._its.q_body_weldid, qd_pose,
-      self._q_geomgroup, self._q_flags, self._q_bex, self._q_max_dist,
-      self._its.q_mesh_root_all, self._its.q_tri, self._its.q_bmin,
-      self._its.q_bmax, self._its.q_left, self._its.q_right,
-      self._its.q_first, self._its.q_count,
-      self._its.q_hf_data, self._its.q_hf_adr, self._its.q_hf_nrow,
-      self._its.q_hf_ncol, self._its.q_hf_size,
-      qd_out, qd_stack,
+      qd_frame_pose,
+      self._q_offsets,
+      self._q_dirs0,
+      self._its.q_geom_type,
+      self._its.q_geom_size,
+      self._its.q_geom_group,
+      self._its.q_geom_bodyid,
+      self._its.q_body_weldid,
+      qd_pose,
+      self._q_geomgroup,
+      self._q_flags,
+      self._q_bex,
+      self._q_max_dist,
+      self._its.q_mesh_root_all,
+      self._its.q_tri,
+      self._its.q_bmin,
+      self._its.q_bmax,
+      self._its.q_left,
+      self._its.q_right,
+      self._its.q_first,
+      self._its.q_count,
+      self._its.q_hf_data,
+      self._its.q_hf_adr,
+      self._its.q_hf_nrow,
+      self._its.q_hf_ncol,
+      self._its.q_hf_size,
+      qd_out,
+      qd_stack,
     )
     qd.sync()
     distances, normals = self._read_out(qd_out, worlds)
@@ -512,8 +538,10 @@ class QdRaycastContext:
     for f in range(F):
       sl = slice(f * R, (f + 1) * R)
       dist_f, _, norm_f = self._its.closest_hit_scene(
-        o[:, sl], d[:, sl],
-        geomgroup=None, flg_static=True,
+        o[:, sl],
+        d[:, sl],
+        geomgroup=None,
+        flg_static=True,
         bodyexclude=self._frame_body_exclude[f],
       )
       distances[:, sl] = dist_f
@@ -525,7 +553,5 @@ class QdRaycastContext:
     hit = distances_t >= 0
     normals_t = torch.from_numpy(normals.astype(np.float32)) * hit.unsqueeze(-1)
     clamped = distances_t.clamp(min=0.0)
-    hit_pos = (
-      rays_o.reshape(B, N, 3) + rays_d.reshape(B, N, 3) * clamped.unsqueeze(-1)
-    )
+    hit_pos = rays_o.reshape(B, N, 3) + rays_d.reshape(B, N, 3) * clamped.unsqueeze(-1)
     return distances_t, normals_t, hit_pos

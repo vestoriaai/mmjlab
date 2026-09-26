@@ -27,21 +27,6 @@ import mujoco
 import numpy as np
 import pytest
 import torch
-
-from mjlab.entity import EntityCfg
-from mjlab.scene import SceneCfg
-from mjlab.sensor import (
-  GridPatternCfg,
-  ObjRef,
-  PinholeCameraPatternCfg,
-  RayCastSensorCfg,
-  RingPatternCfg,
-)
-from mjlab.sensor import raycast_qd
-from mjlab.sensor.raycast_core import RaycastCoreContext
-from mjlab.sensor.raycast_qd import QdRaycastContext
-from mjlab.sim.sim import SimulationCfg, make_simulation
-
 from test_classic_raycast_core import (
   CRATE_HALF,
   CRATE_QUAT,
@@ -51,6 +36,20 @@ from test_classic_raycast_core import (
   _robot_entity,
   _static_mesh_entity,
 )
+
+from mjlab.entity import EntityCfg
+from mjlab.scene import SceneCfg
+from mjlab.sensor import (
+  GridPatternCfg,
+  ObjRef,
+  PinholeCameraPatternCfg,
+  RayCastSensorCfg,
+  RingPatternCfg,
+  raycast_qd,
+)
+from mjlab.sensor.raycast_core import RaycastCoreContext
+from mjlab.sensor.raycast_qd import QdRaycastContext
+from mjlab.sim.sim import SimulationCfg, make_simulation
 
 # qd 后端依赖可选的 quadrants/qd-render-poc：未安装时整文件跳过（回退路径由
 # 其余 raycast 测试在无 qd 环境下天然覆盖）。
@@ -142,9 +141,7 @@ def _mesh_entities() -> dict[str, EntityCfg]:
 
 
 def _terrain_entities() -> dict[str, EntityCfg]:
-  return {
-    "terrain": EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(HFIELD_XML))
-  }
+  return {"terrain": EntityCfg(spec_fn=lambda: mujoco.MjSpec.from_string(HFIELD_XML))}
 
 
 def _fill_hfield(model: mujoco.MjModel) -> None:
@@ -221,9 +218,7 @@ def _patterns(name: str) -> list[RayCastSensorCfg]:
 
 
 def _qd_cfg(name: str, pattern, frame: ObjRef) -> RayCastSensorCfg:
-  return RayCastSensorCfg(
-    name=name, frame=frame, pattern=pattern, raycast_backend="qd"
-  )
+  return RayCastSensorCfg(name=name, frame=frame, pattern=pattern, raycast_backend="qd")
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +295,6 @@ def _degenerate_reason(
     return None  # 无简单退化特征（1A 在 ellipsoid 上 rel 门内全过）
   if gtype == CYLINDER:
     axis = gmat[:, 2]
-    perp_line = np.cross(axis, o - gpos)
     ts = np.dot(axis, gpos - o) / max(np.dot(axis, axis), 1e-30)
     perp = float(np.linalg.norm(np.cross(axis, o + ts * d - gpos)))
     if abs(perp - float(size[0])) < 1e-4:
@@ -326,9 +320,7 @@ def _degenerate_reason(
     nrow, ncol = int(model.hfield_nrow[hid]), int(model.hfield_ncol[hid])
     dx, dy = 2 * sx / (ncol - 1), 2 * sy / (nrow - 1)
     u, v = lp[0] + sx, lp[1] + sy
-    if abs(u / dx - round(u / dx)) * dx < tol or abs(
-      v / dy - round(v / dy)
-    ) * dy < tol:
+    if abs(u / dx - round(u / dx)) * dx < tol or abs(v / dy - round(v / dy)) * dy < tol:
       return "hfield-grid-line"
     if abs(abs(lp[0]) - sx) < tol or abs(abs(lp[1]) - sy) < tol:
       return "hfield-side-wall"
@@ -494,16 +486,20 @@ def test_cross_backend_qd_vs_torch():
     radius=0.12, num_samples=15, direction=(1.0, 0.0, -0.5)
   )
   torch_cfgs = (
-    RayCastSensorCfg(name="grid_scan", frame=_base_frame(), pattern=grid,
-                     raycast_backend="torch"),
-    RayCastSensorCfg(name="ring_scan", frame=_base_frame(), pattern=ring,
-                     raycast_backend="torch"),
+    RayCastSensorCfg(
+      name="grid_scan", frame=_base_frame(), pattern=grid, raycast_backend="torch"
+    ),
+    RayCastSensorCfg(
+      name="ring_scan", frame=_base_frame(), pattern=ring, raycast_backend="torch"
+    ),
   )
   qd_cfgs = (
-    RayCastSensorCfg(name="grid_scan", frame=_base_frame(), pattern=grid,
-                     raycast_backend="qd"),
-    RayCastSensorCfg(name="ring_scan", frame=_base_frame(), pattern=ring,
-                     raycast_backend="qd"),
+    RayCastSensorCfg(
+      name="grid_scan", frame=_base_frame(), pattern=grid, raycast_backend="qd"
+    ),
+    RayCastSensorCfg(
+      name="ring_scan", frame=_base_frame(), pattern=ring, raycast_backend="qd"
+    ),
   )
   entities = dict(_mesh_entities())
   entities["robot"] = _ghost_robot_entity()
@@ -696,29 +692,39 @@ def test_backend_selection_policy():
   含 mesh/图元场景选 qd；显式 "qd"/"torch" 生效。"""
   grid = GridPatternCfg(size=(0.4, 0.4), resolution=0.2)
   scene, sim = _make(
-    2, _terrain_entities(),
+    2,
+    _terrain_entities(),
     (RayCastSensorCfg(name="scan", frame=_base_frame(), pattern=grid),),
   )
   assert isinstance(sim._sensor_context._raycast_ctxs["scan"], RaycastCoreContext)
 
   scene, sim = _make(
-    2, _mesh_entities(),
+    2,
+    _mesh_entities(),
     (RayCastSensorCfg(name="scan", frame=_base_frame(), pattern=grid),),
   )
   assert isinstance(sim._sensor_context._raycast_ctxs["scan"], QdRaycastContext)
 
   scene, sim = _make(
-    2, _mesh_entities(),
-    (RayCastSensorCfg(name="scan", frame=_base_frame(), pattern=grid,
-                      raycast_backend="torch"),),
+    2,
+    _mesh_entities(),
+    (
+      RayCastSensorCfg(
+        name="scan", frame=_base_frame(), pattern=grid, raycast_backend="torch"
+      ),
+    ),
   )
   assert isinstance(sim._sensor_context._raycast_ctxs["scan"], RaycastCoreContext)
 
   # 显式 qd 在 plane/hfield 场景也可用（hfield 斜射线解锁）。
   scene, sim = _make(
-    2, _terrain_entities(),
-    (RayCastSensorCfg(name="scan", frame=_base_frame(), pattern=grid,
-                      raycast_backend="qd"),),
+    2,
+    _terrain_entities(),
+    (
+      RayCastSensorCfg(
+        name="scan", frame=_base_frame(), pattern=grid, raycast_backend="qd"
+      ),
+    ),
   )
   assert isinstance(sim._sensor_context._raycast_ctxs["scan"], QdRaycastContext)
 
