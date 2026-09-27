@@ -7,9 +7,13 @@ MjwarpCameraContext`'s surface exactly (``render`` / ``get_rgb`` /
 be selected through ``CameraSensorCfg.render_backend="qd"`` and wrapped by the
 async render thread unchanged. The rendering itself is the stage-1A/1B
 validated ``qd_render_poc`` megakernel (one launch per resolution group:
-ray generation + closest-hit over primitives/mesh BVH/hfield + bilinear
-texture sampling + per-light Phong + any-hit shadow rays), with outputs
-resident on the qd device and read back once per frame.
+ray generation + closest-hit over primitives/mesh BVH/hfield + trilinear
+mipmapped texture sampling + per-light Phong + shadow rays replicating
+mjr's shadowmap), with outputs resident on the qd device and read back
+once per frame. Segmentation follows the mjr
+``enable_segmentation_rendering`` encoding: ``[num_envs, H, W, 2]`` int32
+of ``(mjModel geom id, mjOBJ_GEOM)`` with background ``(-1, -1)`` (not
+available through the async wrapper, which only plumbs rgb/depth).
 
 Alignment: vs ``mujoco.Renderer`` golden frames the renderer meets the stage-0
 tolerances (RGB uint8 mean abs diff <= 2; depth background sets identical) on
@@ -62,7 +66,7 @@ class _QdCameraGroup:
     sensors: list["CameraSensor"],
     num_envs: int,
   ) -> None:
-    from qd_render_poc.render import QdSceneRenderer
+    from qd_render_poc.render import QdSceneRenderer, decode_seg
 
     from mjlab.sensor import raycast_qd
 
@@ -75,6 +79,10 @@ class _QdCameraGroup:
     ref = sensors[0]
     self.sensors = sensors
     self.num_envs = num_envs
+    self.wants_seg = any(
+      "segmentation" in s.cfg.data_types for s in sensors
+    )
+    self.wants_depth = any("depth" in s.cfg.data_types for s in sensors)
     self._renderer = QdSceneRenderer(
       mj_model,
       nworld=num_envs,
@@ -89,10 +97,11 @@ class _QdCameraGroup:
 
   def render(
     self, poses: dict[str, np.ndarray]
-  ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    """One launch for the whole group; returns per-sensor
-    ``[num_envs, H, W, 3]`` uint8 and ``[num_envs, H, W]`` float32 arrays
-    (sensor order)."""
+  ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray | None]]:
+    """One launch for the whole group (a second seg-mode launch when any
+    sensor wants segmentation); returns per-sensor ``[num_envs, H, W, 3]``
+    uint8, ``[num_envs, H, W]`` float32 and ``[num_envs, H, W, 2]`` int32
+    arrays (sensor order; seg entries None for sensors not requesting it)."""
     r = self._renderer
     r.set_geom_poses(poses["geom_xpos"], poses["geom_xmat"])
     if r.nlight:
@@ -105,12 +114,32 @@ class _QdCameraGroup:
       cam_xpos.transpose(1, 0, 2).reshape(r.S * r.nworld, 3),
       cam_xmat.transpose(1, 0, 2).reshape(r.S * r.nworld, 9),
     )
-    rgb, depth = r.render()
+    segs: list[np.ndarray | None] = [None] * len(self.sensors)
+    depth = None
+    if self.wants_seg:
+      # seg 模式复用 out_depth 打包 (geom_id, mjOBJ_GEOM)；需要 depth 的传感器
+      # 由随后的 seg 关闭二次 launch 提供。
+      from qd_render_poc.render import decode_seg
+
+      r.set_seg_mode(True)
+      rgb, depth = r.render()
+      packed_np = depth.to_numpy().reshape(
+        r.S, r.nworld, r.height, r.width)
+      seg_dec = decode_seg(packed_np)
+      for s, sensor in enumerate(self.sensors):
+        if "segmentation" in sensor.cfg.data_types:
+          segs[s] = np.ascontiguousarray(seg_dec[s])
+    if self.wants_depth or not self.wants_seg:
+      # 正常（非 seg）launch：出 rgb+depth。seg-only 组不加二次 launch，
+      # rgb 直接取自 seg launch（两模式 rgb 均有效）。
+      r.set_seg_mode(False)
+      rgb, depth = r.render()
     imgs = rgb.to_numpy().reshape(r.S, r.nworld, r.height, r.width, 3)
     deps = depth.to_numpy().reshape(r.S, r.nworld, r.height, r.width)
     return (
       [np.ascontiguousarray(imgs[s]) for s in range(r.S)],
       [np.ascontiguousarray(deps[s]) for s in range(r.S)],
+      segs,
     )
 
 
@@ -147,6 +176,7 @@ class QdCameraContext:
     self._num_envs: int | None = None
     self._rgb: list[torch.Tensor | None] = [None] * len(self.camera_sensors)
     self._depth: list[torch.Tensor | None] = [None] * len(self.camera_sensors)
+    self._seg: list[torch.Tensor | None] = [None] * len(self.camera_sensors)
     self._groups: list[_QdCameraGroup] = []
     self._group_of: list[int] = []
     self._staging: dict[str, np.ndarray] | None = None
@@ -172,10 +202,8 @@ class QdCameraContext:
     return self._sensor_buffer(cam_idx, "depth")
 
   def get_segmentation(self, cam_idx: int) -> torch.Tensor:
-    del cam_idx
-    raise NotImplementedError(
-      "Segmentation rendering is not wired for the qd classic-camera backend yet."
-    )
+    buf = self._sensor_buffer(cam_idx, "segmentation")
+    return buf
 
   def close(self) -> None:
     """Release renderer resources (stateless backend; buffers dropped)."""
@@ -229,11 +257,12 @@ class QdCameraContext:
   def _validate(self) -> None:
     ref = self.camera_sensors[0].cfg
     for sensor in self.camera_sensors:
-      unsupported = set(sensor.cfg.data_types) - {"rgb", "depth"}
+      unsupported = set(sensor.cfg.data_types) - {"rgb", "depth",
+                                                   "segmentation"}
       if unsupported:
         raise NotImplementedError(
-          "The qd classic-camera backend supports 'rgb' and 'depth' "
-          f"(segmentation not wired yet); camera '{sensor.cfg.name}' "
+          "The qd classic-camera backend supports 'rgb', 'depth' and "
+          f"'segmentation'; camera '{sensor.cfg.name}' "
           f"requested {sorted(unsupported)}."
         )
       for field in ("use_textures", "use_shadows", "enabled_geom_groups"):
@@ -296,7 +325,7 @@ class QdCameraContext:
     num_envs = self._num_envs
     assert num_envs is not None
     for group in self._groups:
-      imgs, deps = group.render(poses)
+      imgs, deps, segs = group.render(poses)
       for local, sensor in enumerate(group.sensors):
         i = self.camera_sensors.index(sensor)
         h, w = sensor.cfg.height, sensor.cfg.width
@@ -308,6 +337,10 @@ class QdCameraContext:
           if depth_out[i] is None:
             depth_out[i] = torch.zeros(num_envs, h, w, 1, dtype=torch.float32)
           depth_out[i][...] = torch.from_numpy(deps[local])[..., None]
+        if "segmentation" in sensor.cfg.data_types and segs[local] is not None:
+          if self._seg[i] is None:
+            self._seg[i] = torch.zeros(num_envs, h, w, 2, dtype=torch.int32)
+          self._seg[i][...] = torch.from_numpy(segs[local])
 
   def _sensor_buffer(self, cam_idx: int, kind: str) -> torch.Tensor:
     list_idx = next(
@@ -324,7 +357,12 @@ class QdCameraContext:
       raise RuntimeError(
         f"Camera '{sensor.cfg.name}' does not have {kind} rendering enabled."
       )
-    buf = self._rgb[list_idx] if kind == "rgb" else self._depth[list_idx]
+    if kind == "rgb":
+      buf = self._rgb[list_idx]
+    elif kind == "depth":
+      buf = self._depth[list_idx]
+    else:
+      buf = self._seg[list_idx]
     if buf is None:
       raise RuntimeError(
         "No qd camera frame available yet; call sim.sense() before reading camera data."

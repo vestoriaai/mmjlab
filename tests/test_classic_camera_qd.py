@@ -285,9 +285,42 @@ def test_backend_selection():
     sim_a.close()
 
 
-def test_segmentation_unsupported():
-  with pytest.raises(NotImplementedError, match="segmentation"):
-    _make(num_envs=2, data_types=("rgb", "segmentation"))
+def test_segmentation_output():
+  """T3 解锁：segmentation [N,H,W,2] int32 = (geom id, mjOBJ_GEOM)，背景 (-1,-1)。
+
+  编码对拍基准 = mjr enable_segmentation_rendering（实测同编码，qd 侧
+  m13_seg 黄金帧逐像素一致，除亚像素剪影翻转类 1px）。
+  """
+  scene, sim = _make(num_envs=2, data_types=("rgb", "segmentation"))
+  try:
+    sim.reset()
+    sim.forward()
+    sim.sense()
+    sensor = scene["test_cam"]
+    seg = sensor.data.segmentation
+    assert seg.shape == (2, 84, 84, 2) and seg.dtype == torch.int32
+    ids, types = seg[..., 0], seg[..., 1]
+    hit = ids >= 0
+    assert torch.equal(types[hit], torch.full_like(types[hit], 5))
+    assert torch.equal(types[~hit], torch.full_like(types[~hit], -1))
+    assert torch.equal(ids[~hit], torch.full_like(ids[~hit], -1))
+    floor_id = box_id = None
+    for gid in range(sim.mj_model.ngeom):
+      name = mujoco.mj_id2name(sim.mj_model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+      if name.endswith("floor"):
+        floor_id = gid
+      if name.endswith("red_box"):
+        box_id = gid
+    valid = {int(i) for i in torch.unique(ids[hit])}
+    assert valid <= {floor_id, box_id}
+    assert box_id in valid and floor_id in valid
+    # seg 背景 ⇔ rgb 背景像素（本场景相机俯视无天空，跳过该断言）
+    rgb = sensor.data.rgb
+    sky = rgb.sum(-1) == 0
+    if int(sky.sum()) > 0:
+      assert torch.equal(ids[sky], torch.full_like(ids[sky], -1))
+  finally:
+    sim.close()
 
 
 # ---------------------------------------------------------------------------
