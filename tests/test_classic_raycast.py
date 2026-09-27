@@ -224,7 +224,7 @@ def test_classic_sense_perf_256():
   from conftest import require_quiet_machine
   from mjlab.sensor import raycast_cpu
 
-  require_quiet_machine()
+  require_quiet_machine(max_load_frac=0.25)  # 0.3ms 门余量小，用更严的空闲阈值
 
   scene, sim = _make("classic", num_envs=256, sensors=(_terrain_cfg(),))
   sim.reset()

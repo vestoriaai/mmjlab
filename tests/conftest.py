@@ -36,18 +36,23 @@ def get_test_device() -> str:
 PERF_LOAD_LIMIT = (os.cpu_count() or 1) * 0.5
 
 
-def require_quiet_machine(max_wait_s: float = 60.0) -> None:
-  """等待 1 分钟负载降到 PERF_LOAD_LIMIT 以下；超时仍未降则 skip 当前测试。"""
+def require_quiet_machine(max_wait_s: float = 120.0, max_load_frac: float = 0.25) -> None:
+  """等待 1 分钟负载降到阈值以下；超时仍未降则 skip 当前测试。
+
+  max_load_frac × 核数 = 负载阈值。微基准门槛余量小（如 0.15ms 门 vs 实测
+  0.144ms）时建议 0.25；大余量门槛可用 0.5（PERF_LOAD_LIMIT）。
+  """
   import time
 
-  if os.getloadavg()[0] <= PERF_LOAD_LIMIT:
+  limit = (os.cpu_count() or 1) * max_load_frac
+  if os.getloadavg()[0] <= limit:
     return
   deadline = time.perf_counter() + max_wait_s
-  while os.getloadavg()[0] > PERF_LOAD_LIMIT and time.perf_counter() < deadline:
+  while os.getloadavg()[0] > limit and time.perf_counter() < deadline:
     time.sleep(1.0)
-  if os.getloadavg()[0] > PERF_LOAD_LIMIT:
+  if os.getloadavg()[0] > limit:
     pytest.skip(
-      f"机器持续繁忙（load > {PERF_LOAD_LIMIT:.0f}），性能门槛在空闲机器上断言"
+      f"机器持续繁忙（load > {limit:.1f}），性能门槛在空闲机器上断言"
     )
 
 

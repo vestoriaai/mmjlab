@@ -171,7 +171,7 @@ def test_jac_torch_perf_256():
   """性能门槛：_jac_torch ≤ 0.15ms @B=256（humanoid 模型）。"""
   from conftest import require_quiet_machine
 
-  require_quiet_machine()
+  require_quiet_machine(max_load_frac=0.25)  # 0.15ms 门余量仅 4%，用更严的空闲阈值
   import os
 
   from mjlab.envs.mdp.actions.differential_ik import _jac_torch
@@ -216,12 +216,12 @@ def test_jac_torch_perf_256():
   import pytest
   import time as _time
 
-  from conftest import PERF_LOAD_LIMIT
+  strict_limit = (os.cpu_count() or 1) * 0.25  # 与 require_quiet_machine(0.25) 同阈值
 
   best = float("inf")
   measured_load = None
   for _ in range(8):
-    if os.getloadavg()[0] > PERF_LOAD_LIMIT:
+    if os.getloadavg()[0] > strict_limit:
       _time.sleep(1.0)
       continue
     times = []
@@ -236,7 +236,7 @@ def test_jac_torch_perf_256():
     _time.sleep(0.5)
   if measured_load is None:
     pytest.skip(
-      f"机器持续繁忙（load > {PERF_LOAD_LIMIT:.0f}），性能门槛在空闲机器上断言"
+      f"机器持续繁忙（load > {strict_limit:.1f}），性能门槛在空闲机器上断言"
     )
   print(
     f"\n_jac_torch @B=256,nv={nv}: best {best:.4f} ms (load {measured_load:.1f})"
