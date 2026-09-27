@@ -66,7 +66,7 @@ class _QdCameraGroup:
     sensors: list["CameraSensor"],
     num_envs: int,
   ) -> None:
-    from qd_render_poc.render import QdSceneRenderer, decode_seg
+    from qd_render_poc.render import QdSceneRenderer
 
     from mjlab.sensor import raycast_qd
 
@@ -79,9 +79,7 @@ class _QdCameraGroup:
     ref = sensors[0]
     self.sensors = sensors
     self.num_envs = num_envs
-    self.wants_seg = any(
-      "segmentation" in s.cfg.data_types for s in sensors
-    )
+    self.wants_seg = any("segmentation" in s.cfg.data_types for s in sensors)
     self.wants_depth = any("depth" in s.cfg.data_types for s in sensors)
     self._renderer = QdSceneRenderer(
       mj_model,
@@ -123,8 +121,7 @@ class _QdCameraGroup:
 
       r.set_seg_mode(True)
       rgb, depth = r.render()
-      packed_np = depth.to_numpy().reshape(
-        r.S, r.nworld, r.height, r.width)
+      packed_np = depth.to_numpy().reshape(r.S, r.nworld, r.height, r.width)
       seg_dec = decode_seg(packed_np)
       for s, sensor in enumerate(self.sensors):
         if "segmentation" in sensor.cfg.data_types:
@@ -257,8 +254,7 @@ class QdCameraContext:
   def _validate(self) -> None:
     ref = self.camera_sensors[0].cfg
     for sensor in self.camera_sensors:
-      unsupported = set(sensor.cfg.data_types) - {"rgb", "depth",
-                                                   "segmentation"}
+      unsupported = set(sensor.cfg.data_types) - {"rgb", "depth", "segmentation"}
       if unsupported:
         raise NotImplementedError(
           "The qd classic-camera backend supports 'rgb', 'depth' and "
