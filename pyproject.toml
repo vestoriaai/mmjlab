@@ -50,7 +50,9 @@ dependencies = [
   "tensorboard>=2.20.0",
   "onnxscript>=0.5.4",
   "wandb>=0.22.3",
-  "mjbatch==0.1.0",
+  # >= feat/efc-bindings: the classic backend's include_efc needs the new Batch
+  # kwarg; efc capture itself stays opt-in (SimulationCfg.include_efc).
+  "mjbatch>=0.1.1",
 ]
 
 [project.urls]
