@@ -89,6 +89,32 @@ def _is_num(template: Any, name: str) -> bool:
   )
 
 
+# data.efc.<name> -> the mjbatch bind holding that array (include_efc only).
+_EFC_FIELDS = {"nefc": "nefc", "type": "efc_type", "id": "efc_id", "force": "efc_force"}
+
+
+class _ClassicEfc:
+  """The captured constraint solver rows, like the Warp Data's ``efc`` block.
+
+  ``nefc`` is ``(N,)``; ``type`` and ``id`` are ``(N, njmax)`` int32 and ``force``
+  is ``(N, njmax)`` float32. Only the first ``nefc`` rows of a world are valid;
+  the rest is stale, so mask by ``nefc`` before reading. Needs
+  ``SimulationCfg(include_efc=True)``."""
+
+  def __init__(self, data: ClassicData) -> None:
+    self._data = data
+
+  def __getattr__(self, name: str) -> torch.Tensor:
+    if name.startswith("_") or name not in _EFC_FIELDS:
+      raise AttributeError(name)
+    view = self._data._views.get(_EFC_FIELDS[name])
+    if view is None:
+      # A late-bound field holds zeros until a physics call fills it.
+      view = self._data._bind(_EFC_FIELDS[name])
+      self._data._batch.forward()
+    return view
+
+
 class ClassicData:
   """Batched torch views over the batch's ``mjData`` fields, like the Warp Data bridge."""
 
@@ -123,6 +149,11 @@ class ClassicData:
       view = self._bind(name)
       self._batch.forward()
     return view
+
+  @property
+  def efc(self) -> _ClassicEfc:
+    """The constraint solver rows; needs ``SimulationCfg(include_efc=True)``."""
+    return _ClassicEfc(self)
 
 
 class ClassicModel:
@@ -241,7 +272,13 @@ class ClassicSimulation:
     mujoco.mj_forward(self._mj_model, self._mj_data)
 
     try:
-      self._batch = Batch(compiled, num_sims=num_envs, num_threads=cfg.num_threads or 0)
+      self._batch = Batch(
+        compiled,
+        num_sims=num_envs,
+        num_threads=cfg.num_threads or 0,
+        include_efc=cfg.include_efc,
+        njmax=cfg.njmax or 0,
+      )
     except ValueError as e:
       raise ValueError(f"The classic backend cannot batch this model: {e}") from e
     self.num_threads = self._batch.num_threads

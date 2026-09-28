@@ -197,6 +197,14 @@ class SimulationCfg:
 
   Constraint arrays are batched by world: no world may have more than njmax
   constraints. If None, a heuristic value is used."""
+  include_efc: bool = False
+  """Classic backend only: capture the constraint solver rows (``data.efc``).
+
+  Off by default — capture costs a small per-step copy. When on,
+  ``sim.data.efc`` exposes ``nefc`` (N,), ``type`` / ``id`` (N, njmax) int32 and
+  ``force`` (N, njmax) float32, with the first ``nefc`` rows valid per world, so
+  friction-dependent actuators can read the solver's per-row output. Raises at
+  runtime if a world needs more than ``njmax`` rows."""
   contact_sensor_maxmatch: int = 64
   broadphase: Literal["nxn", "sap_tile", "sap_segmented"] | None = None
   """Broadphase collision algorithm. If None, use the MuJoCo Warp default."""
