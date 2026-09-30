@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
+import torch
 import tyro
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
@@ -49,7 +50,8 @@ class TrainConfig:
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
   if cuda_visible == "":
-    device = "cpu"
+    # No CUDA device requested: prefer Apple MPS when available, CPU otherwise.
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
     seed = cfg.agent.seed
     rank = 0
   else:
@@ -107,8 +109,12 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
 
+  # Physics always runs on CPU (the classic backend requires it and MuJoCo Warp
+  # has no Metal backend); `device` only accelerates policy inference/learning.
   env = ManagerBasedRlEnv(
-    cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
+    cfg=cfg.env,
+    device="cpu" if device == "mps" else device,
+    render_mode="rgb_array" if cfg.video else None,
   )
 
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
