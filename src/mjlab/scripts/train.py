@@ -52,7 +52,14 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
   if cuda_visible == "":
     # No CUDA device requested: prefer Apple MPS when available, CPU otherwise.
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    # MJLAB_TRAIN_DEVICE overrides the auto-detection — pure-MLP policies train
+    # faster on CPU (MPS per-step inference overhead dominates); vision/CNN
+    # policies are the MPS win case.
+    device = os.environ.get("MJLAB_TRAIN_DEVICE") or (
+      "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+    if device not in ("cpu", "mps"):
+      device = "mps" if torch.backends.mps.is_available() else "cpu"
     seed = cfg.agent.seed
     rank = 0
   else:
