@@ -12,6 +12,7 @@ import tyro
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+from mjlab.rl.learner_device import apply_learner_device
 from mjlab.scripts._cli import maybe_print_top_level_help
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
@@ -165,6 +166,12 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
 
   runner = runner_cls(env, agent_cfg, str(log_dir), device, **runner_kwargs)
+
+  # Experimental (Apple Silicon): keep env/rollout/storage on `device` (CPU) and
+  # run only the PPO update on MJLAB_LEARNER_DEVICE (e.g. mps).
+  learner_device = os.environ.get("MJLAB_LEARNER_DEVICE")
+  if learner_device:
+    apply_learner_device(runner, learner_device)
 
   add_wandb_tags(cfg.agent.wandb_tags)
   runner.add_git_repo_to_log(__file__)
