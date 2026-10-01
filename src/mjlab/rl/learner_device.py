@@ -77,6 +77,26 @@ def _apply_learner_device(alg, rollout_device: str, learner_device: str) -> None
 
     module.update_normalization = update_normalization
 
+  # Adaptive-KL controller numerics: the KL scalar is a pure function of the two
+  # distribution parameterizations (Gaussian closed form, no module state), but
+  # f32 log-prob reductions on MPS systematically overestimate it, which pins
+  # the LR schedule at its 1e-5 floor (4000-iter evidence,
+  # docs/results/worklog-mac-training-speed.md). Compute the control scalar in
+  # f64 on CPU: the controller becomes numerically identical across devices, at
+  # the cost of ~1MB of parameter transfers per minibatch.
+  actor = alg.actor
+  dist = actor.distribution
+
+  def get_kl_divergence_f64(old_params, new_params):
+    # NOTE: MPS tensors cannot cast straight to float64 ("MPS framework doesn't
+    # support float64"); move to CPU in the source dtype first, then upcast.
+    old64 = tuple(t.detach().to("cpu").to(torch.float64) for t in old_params)
+    new64 = tuple(t.detach().to("cpu").to(torch.float64) for t in new_params)
+    # The result must go back as f32: MPS has no float64 storage.
+    return dist.kl_divergence(old64, new64).to("cpu", torch.float32).to(new_params[0].device)
+
+  actor.get_kl_divergence = get_kl_divergence_f64
+
   orig_update = alg.update
 
   def update():
