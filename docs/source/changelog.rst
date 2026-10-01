@@ -10,13 +10,14 @@ Added
 
 - Experimental split-device PPO training on Apple Silicon: with
   ``MJLAB_LEARNER_DEVICE=mps``, the env, rollout storage, and policy inference
-  stay on CPU while only the PPO update runs on Metal (MPS). Measured on M4
-  (Velocity-Flat, classic backend, 4096 envs): learning 2.2x faster and
-  end-to-end throughput +11.5% (12.7k to 14.1k env-steps/s). The hook computes
+  stay on CPU while only the PPO update runs on Metal (MPS). The hook computes
   the adaptive-KL control scalar in f64 on CPU: under MPS numerics the f32
   scalar is systematically overestimated, which pins the learning-rate schedule
   at its floor (4000-iteration check: reward 36.2 vs 74.7 on CPU without the
-  fix, 72.9 with it). The flag stays experimental and off by default.
+  fix, 72.9 with it). Long-horizon throughput (1000 iterations at 4096 envs)
+  is parity with CPU (15.0k vs 15.4k env-steps/s) --- an earlier +11.5%
+  short-window reading was warmup contamination in the CPU arm. The flag
+  stays experimental and off by default.
 - Classic MuJoCo (C engine, CPU) simulation backend, selectable with
   ``SimulationCfg(backend="classic")``. It steps the environments with
   `mjbatch <https://github.com/kevinzakka/mjbatch>`_ (a C++ thread pool over the
