@@ -12,11 +12,11 @@ Added
   ``MJLAB_LEARNER_DEVICE=mps``, the env, rollout storage, and policy inference
   stay on CPU while only the PPO update runs on Metal (MPS). Measured on M4
   (Velocity-Flat, classic backend, 4096 envs): learning 2.2x faster and
-  end-to-end throughput +11.5% (12.7k to 14.1k env-steps/s). Caveat: a 4000
-  iteration convergence check (256 envs) found the adaptive-KL controller pins
-  the learning rate at its 1e-5 floor under MPS numerics, plateauing reward at
-  36 vs 74.7 on CPU — the flag stays experimental/off by default until the KL
-  path is device-hardened.
+  end-to-end throughput +11.5% (12.7k to 14.1k env-steps/s). The hook computes
+  the adaptive-KL control scalar in f64 on CPU: under MPS numerics the f32
+  scalar is systematically overestimated, which pins the learning-rate schedule
+  at its floor (4000-iteration check: reward 36.2 vs 74.7 on CPU without the
+  fix, 72.9 with it). The flag stays experimental and off by default.
 - Classic MuJoCo (C engine, CPU) simulation backend, selectable with
   ``SimulationCfg(backend="classic")``. It steps the environments with
   `mjbatch <https://github.com/kevinzakka/mjbatch>`_ (a C++ thread pool over the
