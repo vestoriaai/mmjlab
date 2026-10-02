@@ -102,9 +102,16 @@ def _apply_learner_device(alg, rollout_device: str, learner_device: str) -> None
   def update():
     # Optimizer state is created on `learner_device` at the first update and
     # stays there; parameters migrate per update, so the two always meet on
-    # `learner_device` while the optimizer is touched.
+    # `learner_device` while the optimizer is touched. After a checkpoint
+    # resume the state can be on a different device than the parameters
+    # (checkpoint saved mid-update from a previous run); align it too.
     alg.actor.to(learner_device)
     alg.critic.to(learner_device)
+    for param_group in alg.optimizer.param_groups:
+      for param in param_group["params"]:
+        for state_tensor in alg.optimizer.state.get(param, {}).values():
+          if isinstance(state_tensor, torch.Tensor) and state_tensor.device != param.device:
+            state_tensor.data = state_tensor.data.to(param.device)
     if debug:
       print(f"[dbg] actor param device={next(alg.actor.parameters()).device}")
       norm = getattr(alg.actor, "obs_normalizer", None)
