@@ -65,6 +65,7 @@ class _QdCameraGroup:
     mj_model: mujoco.MjModel,
     sensors: list["CameraSensor"],
     num_envs: int,
+    sky_gradient=None,
   ) -> None:
     from qd_render_poc.render import QdSceneRenderer
 
@@ -90,6 +91,7 @@ class _QdCameraGroup:
       use_shadows=ref.cfg.use_shadows,
       enabled_geom_groups=sorted(set(ref.cfg.enabled_geom_groups)),
       camera_id=ref.camera_idx,
+      sky_gradient=sky_gradient,
       ncam=len(sensors),
     )
 
@@ -147,9 +149,21 @@ class QdCameraContext:
   can be wrapped by :class:`mjlab.sensor.camera_cpu.AsyncCpuCameraContext`.
   """
 
+  # MuJoCo 默认天空渐变（无 skybox 时的内建蓝色渐变；实测自 mjwarp 渲染剖面）。
+  DEFAULT_SKY_GRADIENT = (
+    (54 / 255, 108 / 255, 160 / 255),  # 天顶暗蓝
+    (116 / 255, 171 / 255, 228 / 255),  # 地平线亮蓝
+  )
+
   supports_depth = True
 
-  def __init__(self, mj_model: mujoco.MjModel, camera_sensors) -> None:
+  def __init__(
+    self,
+    mj_model: mujoco.MjModel,
+    camera_sensors,
+    sky_gradient: tuple | None = DEFAULT_SKY_GRADIENT,
+  ) -> None:
+    self.sky_gradient = sky_gradient
     from mjlab.sensor import raycast_qd
 
     if not is_available():
@@ -290,7 +304,7 @@ class QdCameraContext:
     for sensor in self.camera_sensors:
       groups.setdefault(group_key(sensor), []).append(sensor)
     self._groups = [
-      _QdCameraGroup(self._mj_model, sensors, num_envs) for sensors in groups.values()
+      _QdCameraGroup(self._mj_model, sensors, num_envs, sky_gradient=self.sky_gradient) for sensors in groups.values()
     ]
     self._group_of = [
       next(i for i, g in enumerate(self._groups) if sensor in g.sensors)

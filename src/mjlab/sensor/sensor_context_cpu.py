@@ -80,7 +80,12 @@ class SensorContextCPU:
     if backend == "auto":
       backend = "qd" if qd_available() else ("mjwarp" if is_available() else "gl")
     if backend == "qd":
-      inner = QdCameraContext(mj_model, self.camera_sensors)
+      # MuJoCo 默认天空渐变（无 skybox 时的内建蓝色渐变，与 mjr/mjwarp 对齐；
+      # 采样自 mjwarp 实测剖面：顶部 (54,108,160) → 地平线 (116,171,228)）
+      inner = QdCameraContext(
+        mj_model, self.camera_sensors,
+        sky_gradient=((54 / 255, 108 / 255, 160 / 255), (116 / 255, 171 / 255, 228 / 255)),
+      )
     elif backend == "mjwarp":
       inner = MjwarpCameraContext(mj_model, self.camera_sensors)
     else:
