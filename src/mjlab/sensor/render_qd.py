@@ -149,10 +149,12 @@ class QdCameraContext:
   can be wrapped by :class:`mjlab.sensor.camera_cpu.AsyncCpuCameraContext`.
   """
 
-  # MuJoCo 默认天空渐变（无 skybox 时的内建蓝色渐变；实测自 mjwarp 渲染剖面）。
+  # opt-in 仰角渐变天空的示例配置。注意：mjr/mjwarp 无 skybox 时默认背景均为
+  # 黑（mjwarp background_color=(0,0,0)，mjr clear 黑），qd 默认 None=黑一致；
+  # 此常量仅作扩展能力示例，非任何后端的实测默认语义。
   DEFAULT_SKY_GRADIENT = (
-    (54 / 255, 108 / 255, 160 / 255),  # 天顶暗蓝
-    (116 / 255, 171 / 255, 228 / 255),  # 地平线亮蓝
+    (83 / 255, 138 / 255, 192 / 255),
+    (116 / 255, 171 / 255, 228 / 255),
   )
 
   supports_depth = True
@@ -161,7 +163,7 @@ class QdCameraContext:
     self,
     mj_model: mujoco.MjModel,
     camera_sensors,
-    sky_gradient: tuple | None = DEFAULT_SKY_GRADIENT,
+    sky_gradient: tuple | None = None,  # None = 黑背景（默认）；opt-in 传渐变
   ) -> None:
     self.sky_gradient = sky_gradient
     from mjlab.sensor import raycast_qd
