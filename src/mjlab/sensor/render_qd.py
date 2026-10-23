@@ -1,8 +1,7 @@
 """Batched camera rendering for the classic backend via the Quadrants (qd)
 ray-tracing renderer on Metal/CUDA (stage 1, M1.5).
 
-:class:`QdCameraContext` mirrors :class:`mjlab.sensor.render_mjwarp.
-MjwarpCameraContext`'s surface exactly (``render`` / ``get_rgb`` /
+:class:`QdCameraContext` exposes a stable surface (``render`` / ``get_rgb`` /
 ``get_depth`` / ``_render_states`` / ``close`` / ``supports_depth``) so it can
 be selected through ``CameraSensorCfg.render_backend="qd"`` and wrapped by the
 async render thread unchanged. The rendering itself is the stage-1A/1B
@@ -133,11 +132,29 @@ class _QdCameraGroup:
       # rgb 直接取自 seg launch（两模式 rgb 均有效）。
       r.set_seg_mode(False)
       rgb, depth = r.render()
-    imgs = rgb.to_numpy().reshape(r.S, r.nworld, r.height, r.width, 3)
-    deps = depth.to_numpy().reshape(r.S, r.nworld, r.height, r.width)
+    # packed i32 RGB（(r<<16)|(g<<8)|b）解包。torch 快路径：DLPack 零拷贝
+    # 别名（qd 缓冲不落地）→ MPS 位运算解码 → .cpu()（~14GB/s，qd 的
+    # to_numpy 仅 ~3.5GB/s，KNOWN_LIMITATIONS #9/#17）；位运算解码与
+    # numpy decode_rgb 逐位一致（已对拍）。别名合同：本函数内即 .cpu()
+    # 物化，早于下一次 render() 复用缓冲（#12）。
+    import torch
+
+    shape = (r.S, r.nworld, r.height, r.width)
+    flat = torch.from_dlpack(rgb.to_dlpack()).view(*shape)
+    imgs = torch.empty((*shape, 3), dtype=torch.uint8, device=flat.device)
+    imgs[..., 0] = (flat >> 16) & 0xFF
+    imgs[..., 1] = (flat >> 8) & 0xFF
+    imgs[..., 2] = flat & 0xFF
+    imgs_np = imgs.cpu().numpy()
+    deps_np = (
+      torch.from_dlpack(depth.to_dlpack())
+      .cpu()
+      .numpy()
+      .reshape(shape)
+    )
     return (
-      [np.ascontiguousarray(imgs[s]) for s in range(r.S)],
-      [np.ascontiguousarray(deps[s]) for s in range(r.S)],
+      [np.ascontiguousarray(imgs_np[s]) for s in range(r.S)],
+      [np.ascontiguousarray(deps_np[s]) for s in range(r.S)],
       segs,
     )
 
@@ -145,8 +162,7 @@ class _QdCameraGroup:
 class QdCameraContext:
   """Batched RGB+depth camera rendering through the qd ray-tracing renderer.
 
-  Same interface as :class:`mjlab.sensor.render_mjwarp.MjwarpCameraContext`;
-  can be wrapped by :class:`mjlab.sensor.camera_cpu.AsyncCpuCameraContext`.
+  Can be wrapped by :class:`mjlab.sensor.camera_cpu.AsyncCpuCameraContext`.
   """
 
   # opt-in 仰角渐变天空的示例配置。注意：mjr/mjwarp 无 skybox 时默认背景均为
@@ -172,7 +188,7 @@ class QdCameraContext:
       raise ImportError(
         "The qd camera render backend requires the quadrants and "
         "qd_render_poc packages; install them or use "
-        'CameraSensorCfg(render_backend="mjwarp"/"gl").'
+        'CameraSensorCfg(render_backend="gl").'
       )
     raycast_qd._ensure_init()  # fail fast on arch init failure
 
