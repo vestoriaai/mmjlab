@@ -400,3 +400,18 @@ classic 臂(臂 A)继续用 `mjlab/.venv`(mujoco 3.11,现役),不动。
   版本——与 fork 代码同源,排除任务集/API 漂移。
 - warp-lang 保留为 mmjlab 依赖(mujoqo host-only 排序/扫描所需),mjlab 自身
   代码 0 warp。
+
+### 12.4 裸物理速度 sanity(2026-10-24,`scripts/bench_bare_physics.py`)
+
+humanoid.xml,裸物理 step(无观测/奖励/传感器),min-of-N,固定协议:
+
+| 臂 | 引擎 | 256 envs(500 步×5) | 4096 envs(100 步×3) |
+|---|---|---|---|
+| 上游 mjlab @ f135c1d | mjwarp-CPU | 17,635 steps/s | 20,686 steps/s |
+| mmjlab | mujoco_qd @ qd.cpu | 18,890 steps/s | **74,431 steps/s(3.6×)** |
+| mmjlab | classic(mjbatch@3.15) | 361,982 steps/s | 398,474 steps/s |
+
+初读:① 小规模(256)两 GPU 型引擎同档,4096 规模 qd.cpu 反超 warp-cpu
+3.6×(qd 批量摊销更好);② classic 在 CPU 上仍一个量级领先——CPU 侧的价值
+口径与论文一致,mmjlab 的速度主张要靠 qd.metal 臂(下一阶段);③ 上游基线
+环境(mjlab-upstream worktree @ fork 点 + warp 栈)已就位,可复现。

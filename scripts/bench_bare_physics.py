@@ -32,14 +32,21 @@ def main() -> None:
 
   model = mujoco.MjModel.from_xml_path(args.xml)
   backend = "qd" if args.backend == "warp" else args.backend  # upstream: warp only
-  from mjlab.sim.sim import SimulationCfg, make_simulation
+  from mjlab.sim.sim import Simulation, SimulationCfg
 
-  sim = make_simulation(
-    num_envs=args.num_envs,
-    cfg=SimulationCfg(backend=backend),
-    model=model,
-    device="cpu",
-  )
+  try:
+    from mjlab.sim.sim import make_simulation
+
+    sim = make_simulation(
+      num_envs=args.num_envs,
+      cfg=SimulationCfg(backend=backend),
+      model=model,
+      device="cpu",
+    )
+  except ImportError:
+    # Upstream mjlab (warp-only): construct the Simulation directly.
+    sim = Simulation(num_envs=args.num_envs, cfg=SimulationCfg(), model=model,
+                     device="cpu")
   sim.reset()
 
   # Warmup (kernel compilation / allocator warmup excluded from timing).
