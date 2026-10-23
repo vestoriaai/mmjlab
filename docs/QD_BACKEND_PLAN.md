@@ -355,3 +355,48 @@ uv pip install -e /Users/mini0/Code/simtest/qd-render-poc  # 渲染/相机(已�
 ```
 
 classic 臂(臂 A)继续用 `mjlab/.venv`(mujoco 3.11,现役),不动。
+
+---
+
+## 12. 实施记录(2026-10-24,feat/qd-backend)
+
+阶段 M1+M2 已完成(接口替换 + CPU 正确性验证),本节为实施时点的事实记录。
+
+### 12.1 已落地
+
+- **src 全量去 warp**:`import mujoco_warp/import warp` 在 src/ 下归零;`sim.py`
+  以 `import mujoco_qd as mjwarp`(API 同形)驱动;torch 桥重写为 qd DLPack
+  零拷贝(`sim_data.py` QdBridge/TorchArray,写通已验证);randomization 改
+  numpy tile + `from_data`(compound dtype 按 mujoco_qd._src.types 精确名回查);
+  删除 `render_mjwarp.py`/`sensor_context.py`/CUDA graph 段/mesh-variant 的
+  wp 实现段;backend literal `["qd","classic"]`("warp" 别名)。
+- **进程级 qd 初始化唯一权威**(`sim/qd_runtime.py`):qd 二次 init 会重置并使
+  全部既有分配失效——物理后端(cpu)与 raycast 后端(原逻辑偏好 metal)曾因此
+  互相覆盖,引发随机 Bus error;现双方都走 `ensure_initialized`。
+- **环境**:`mmjlab/.venv-qd`(py3.12)= mujoco 3.15.0 + mujoco_qd(editable,
+  mujoqo 树)+ quadrants 1.3.4.dev142(源码构建,≥dev145 修复 set_const 的
+  VectorType 映射缺陷)+ mjbatch 重编译链接 3.15(--no-build-isolation,
+  缓存坑:uv 会复用隔离构建的旧 wheel,须 --no-cache)+ qd-render-poc。
+- **测试适配**:conftest/sim/sim_data/scene/parity/variants 测改写;variant
+  实现(warp-only)5 测 skip(政策);dcmotor 测在 mujoco≥3.15 skip(3.15
+  移除 input_mode,属 R2 版本 skew,无任务库使用)。
+
+### 12.2 CPU 正确性结果(2026-10-24 实测)
+
+- 双后端冒烟 + 选择性 reset + forward:通过。
+- classic(f64 C)vs qd(f32)单步 parity:**max|Δqpos| = 7.28e-12**
+  (cartpole,容差 1e-3)。
+- 全套 tests/(golden 渲染除外):主体 1050+ 通过;已知残余:
+  ① G1 velocity 任务的 env 构造崩(mujoco_qd put_data 后 Data 字段为未分配
+  模板,site_xpos.shape=None)——引擎侧缺陷,待 mujoqo 修;其连锁(同进程
+  后续测试 Bus error)在去除该用例后消失(DR 文件 102 passed)。
+  ② async 相机吞吐门 130ms:曾于机器高载实测 136.9ms,已加
+  require_quiet_machine 守卫。
+  ③ variants(5)/dcmotor:政策性 skip(见 12.1)。
+
+### 12.3 与计划的偏差
+
+- 上游基线改用 git worktree @ f135c1d(fork 点,上游 PR #1199),而非 PyPI
+  版本——与 fork 代码同源,排除任务集/API 漂移。
+- warp-lang 保留为 mmjlab 依赖(mujoqo host-only 排序/扫描所需),mjlab 自身
+  代码 0 warp。
