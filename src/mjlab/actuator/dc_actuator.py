@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 
 from mjlab.actuator.actuator import ActuatorCmd
 from mjlab.actuator.pd_actuator import IdealPdActuator, IdealPdActuatorCfg, pd_torque
 
 if TYPE_CHECKING:
+  import mujoco_qd as mjwarp
   from mjlab.entity import Entity
 
 DcMotorCfgT = TypeVar("DcMotorCfgT", bound="DcMotorActuatorCfg")

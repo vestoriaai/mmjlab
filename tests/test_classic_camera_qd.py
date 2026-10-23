@@ -261,7 +261,7 @@ def test_env_state_drives_frames():
 
 
 def test_backend_selection():
-  from mjlab.sensor.render_mjwarp import MjwarpCameraContext
+  from mjlab.sensor.camera_cpu import CpuCameraContext
   from mjlab.sensor.render_qd import QdCameraContext, is_available
 
   scene_q, sim_q = _make(num_envs=2, render_backend="qd")
@@ -270,16 +270,16 @@ def test_backend_selection():
   finally:
     sim_q.close()
 
-  scene_m, sim_m = _make(num_envs=2, render_backend="mjwarp")
+  scene_g, sim_g = _make(num_envs=2, render_backend="gl")
   try:
-    assert type(scene_m.sensor_context.camera_context) is MjwarpCameraContext
+    assert type(scene_g.sensor_context.camera_context) is CpuCameraContext
   finally:
-    sim_m.close()
+    sim_g.close()
 
-  # auto 策略（M1.5 更新）：qd 可导入则优先 qd，其次 mjwarp，最后 gl。
+  # auto 策略：qd 可导入则优先 qd，否则 gl。
   scene_a, sim_a = _make(num_envs=2, render_backend="auto")
   try:
-    expected = QdCameraContext if is_available() else MjwarpCameraContext
+    expected = QdCameraContext if is_available() else CpuCameraContext
     assert type(scene_a.sensor_context.camera_context) is expected
   finally:
     sim_a.close()

@@ -3,4 +3,4 @@ from mjlab.sim.sim import Simulation as Simulation
 from mjlab.sim.sim import SimulationCfg as SimulationCfg
 from mjlab.sim.sim import make_simulation as make_simulation
 from mjlab.sim.sim_data import TorchArray as TorchArray
-from mjlab.sim.sim_data import WarpBridge as WarpBridge
+from mjlab.sim.sim_data import QdBridge as QdBridge

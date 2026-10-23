@@ -15,7 +15,6 @@ from importlib.metadata import entry_points
 from pathlib import Path
 
 import tyro
-import warp as wp
 
 MJLAB_SRC_PATH: Path = Path(__file__).parent
 
@@ -31,16 +30,6 @@ TYRO_FLAGS = (
   # Helps with wandb sweep compatibility: https://brentyi.github.io/tyro/wandb_sweeps/
   tyro.conf.UsePythonSyntaxForLiteralCollections,
 )
-
-
-def _configure_warp() -> None:
-  """Configure Warp globally for mjlab."""
-  wp.config.enable_backward = False
-
-  # Keep warp verbose by default to show kernel compilation progress.
-  # Override with MJLAB_WARP_QUIET=1 environment variable if needed.
-  quiet = os.environ.get("MJLAB_WARP_QUIET", "0").lower() in ("1", "true", "yes")
-  wp.config.quiet = quiet
 
 
 def _import_registered_packages() -> None:
@@ -70,6 +59,5 @@ def _configure_mediapy() -> None:
   mediapy.set_ffmpeg(imageio_ffmpeg.get_ffmpeg_exe())
 
 
-_configure_warp()
 _configure_mediapy()
 _import_registered_packages()

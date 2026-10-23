@@ -206,7 +206,7 @@ class AsyncCpuCameraContext:
     # Rendering internals of the wrapped context (scratch MjData, lazily
     # created Renderers / shadow warp scenes) are owned by the render thread
     # from here on. `inner` injects an alternative sync context (e.g. the
-    # mjwarp render backend); default is the GL context.
+    # other batched backends); default is the GL context.
     self._inner = inner if inner is not None else CpuCameraContext(mj_model, camera_sensors)
     self.camera_sensors = self._inner.camera_sensors
 
@@ -400,7 +400,7 @@ class AsyncCpuCameraContext:
 
   def _close_renderers(self) -> None:
     # GL renderers are thread-affine and live on self._inner._renderers;
-    # other inner contexts (mjwarp) shut down through their own close().
+    # other inner contexts shut down through their own close().
     for renderer in getattr(self._inner, "_renderers", {}).values():
       try:
         renderer.close()

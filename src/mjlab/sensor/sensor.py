@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 
 if TYPE_CHECKING:
+  import mujoco_qd as mjwarp
   from mjlab.entity import Entity
   from mjlab.viewer.debug_visualizer import DebugVisualizer
 

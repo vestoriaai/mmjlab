@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 
 from mjlab.entity import Entity
 from mjlab.sensor.sensor import Sensor, SensorCfg
 
 if TYPE_CHECKING:
-  from mjlab.sensor.sensor_context import SensorContext
+  from mjlab.sensor.sensor_context_cpu import SensorContextCPU
 
 CameraDataType = Literal["rgb", "depth", "segmentation"]
 
@@ -33,7 +32,7 @@ class CameraSensorCfg(SensorCfg):
   Note:
     All camera sensors in a scene must share identical values for
     use_textures, use_shadows, and enabled_geom_groups. This is a
-    constraint of the underlying mujoco_warp rendering system.
+    constraint of the underlying batched rendering system.
   """
 
   camera_name: str | None = None
@@ -94,16 +93,15 @@ class CameraSensorCfg(SensorCfg):
   """
 
   async_render: bool = False
-  """Classic backend only: render on a background thread, at most one
-  frame behind. ``sense()`` snapshots the simulation state, hands it to the
-  render thread and returns the most recently completed frame, keeping the
-  render cost off the training hot path. Ignored by the Warp backend."""
+  """Render on a background thread, at most one frame behind. ``sense()``
+  snapshots the simulation state, hands it to the render thread and returns
+  the most recently completed frame, keeping the render cost off the
+  training hot path."""
 
-  render_backend: Literal["auto", "gl", "mjwarp", "qd"] = "auto"
-  """Classic backend only: renderer selection. ``"auto"`` prefers the qd
-  (Quadrants) batch renderer when importable, then the mjwarp batch renderer,
-  falling back to GL; ``"qd"`` / ``"mjwarp"`` / ``"gl"`` force one path.
-  Ignored by the Warp backend."""
+  render_backend: Literal["auto", "gl", "qd"] = "auto"
+  """Renderer selection. ``"auto"`` prefers the qd (Quadrants) batch
+  renderer when importable, falling back to GL; ``"qd"`` / ``"gl"`` force
+  one path."""
 
   def __post_init__(self) -> None:
     valid = {"rgb", "depth", "segmentation"}
@@ -153,7 +151,7 @@ class CameraSensor(Sensor[CameraSensorData]):
     self.cfg = cfg
     self._camera_name = cfg.camera_name if cfg.camera_name is not None else cfg.name
     self._is_wrapping_existing = cfg.camera_name is not None
-    self._ctx: SensorContext | None = None
+    self._ctx: SensorContextCPU | None = None
     self._camera_idx: int = -1
 
   @property
@@ -202,8 +200,8 @@ class CameraSensor(Sensor[CameraSensorData]):
   def initialize(
     self,
     mj_model: mujoco.MjModel,
-    model: mjwarp.Model,
-    data: mjwarp.Data,
+    model,
+    data,
     device: str,
   ) -> None:
     del model, data, device
@@ -217,7 +215,7 @@ class CameraSensor(Sensor[CameraSensorData]):
         f"Camera '{self._camera_name}' not found in model. Available: {available}"
       ) from e
 
-  def set_context(self, ctx: SensorContext) -> None:
+  def set_context(self, ctx: SensorContextCPU) -> None:
     self._ctx = ctx
 
   def _compute_data(self) -> CameraSensorData:

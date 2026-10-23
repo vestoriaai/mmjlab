@@ -1,7 +1,7 @@
 """Tests for sim.py."""
 
 import mujoco
-import mujoco_warp as mjwarp
+import mujoco_qd as mjwarp
 import numpy as np
 import pytest
 import torch
@@ -86,7 +86,7 @@ def test_simulation_config_is_piped(robot_xml, device):
   assert sim.model.opt.iterations == cfg.mujoco.iterations
   assert sim.model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_ENERGY
 
-  # SimulationCfg's warp-only settings should be applied to wp_model.opt.
+  # SimulationCfg's engine-only settings should be applied to wp_model.opt.
   assert sim.wp_model.opt.contact_sensor_maxmatch == cfg.contact_sensor_maxmatch
   assert sim.wp_model.opt.broadphase == mjwarp.BroadphaseType.SAP_TILE
   assert sim.wp_model.opt.broadphase_filter == (
@@ -135,7 +135,6 @@ def test_sim_reset_restores_initial_state(robot_xml, device):
   assert (sim.data.qacc_warmstart == 0).all()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="Likely bug on CPU MjWarp")
 def test_sim_reset_selective(robot_xml, device):
   """Test that sim.reset() only affects specified environments."""
   model = mujoco.MjModel.from_xml_string(robot_xml)

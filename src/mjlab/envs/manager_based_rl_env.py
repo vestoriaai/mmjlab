@@ -5,7 +5,6 @@ from typing import Any
 import mujoco
 import numpy as np
 import torch
-import warp as wp
 from prettytable import PrettyTable
 
 from mjlab.envs import types
@@ -37,7 +36,6 @@ from mjlab.managers.reward_manager import RewardManager, RewardTermCfg
 from mjlab.managers.termination_manager import TerminationManager, TerminationTermCfg
 from mjlab.scene import Scene
 from mjlab.scene.scene import SceneCfg
-from mjlab.sensor.sensor_context_cpu import SensorContextCPU
 from mjlab.sim import SimulationCfg
 from mjlab.sim.sim import make_simulation
 from mjlab.utils import random as random_utils
@@ -171,7 +169,6 @@ class ManagerBasedRlEnv:
   metadata = {
     "render_modes": [None, "rgb_array"],
     "mujoco_version": mujoco.__version__,
-    "warp_version": wp.config.version,
   }
   cfg: ManagerBasedRlEnvCfg
 
@@ -216,11 +213,9 @@ class ManagerBasedRlEnv:
       self.sim.set_sensor_context(self.scene.sensor_context)
       # Pre-render one frame so camera output buffers materialize before
       # ObservationManager probes observation shapes at manager-load time:
-      # classic camera backends (qd/mjwarp) allocate their buffers lazily on
-      # the first sense(), which would otherwise crash visual tasks here.
-      # Scoped to the classic CPU sensor context; the Warp path pre-allocates.
-      if isinstance(self.scene.sensor_context, SensorContextCPU):
-        self.sim.sense()
+      # camera backends (qd/gl) allocate their buffers lazily on the first
+      # sense(), which would otherwise crash visual tasks here.
+      self.sim.sense()
 
     # Print environment info.
     print_info("")

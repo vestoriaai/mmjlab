@@ -168,11 +168,13 @@ def test_classic_requires_cpu_and_rejects_variants() -> None:
     )
 
 
-def test_warp_rejects_classic_only_integrator() -> None:
+def test_qd_accepts_classic_integrators() -> None:
+  """The qd engine implements every integrator, unlike the old warp backend."""
   model = mujoco.MjModel.from_xml_string(PENDULUM_XML)
   cfg = SimulationCfg(mujoco=MujocoCfg(integrator="rk4"))
-  with pytest.raises(ValueError, match="classic"):
-    Simulation(num_envs=1, cfg=cfg, model=model, device="cpu")
+  sim = Simulation(num_envs=1, cfg=cfg, model=model, device="cpu")
+  sim.step()
+  assert torch.isfinite(sim.data.qpos).all()
 
 
 def test_classic_rk4_integrator() -> None:

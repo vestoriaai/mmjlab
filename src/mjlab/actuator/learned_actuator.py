@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 
 from mjlab.actuator.actuator import ActuatorCmd
@@ -14,6 +13,7 @@ from mjlab.actuator.dc_actuator import DcMotorActuator, DcMotorActuatorCfg
 from mjlab.utils.buffers import CircularBuffer
 
 if TYPE_CHECKING:
+  import mujoco_qd as mjwarp
   from mjlab.entity import Entity
 
 

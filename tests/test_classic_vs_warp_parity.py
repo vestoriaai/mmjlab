@@ -1,4 +1,4 @@
-"""classic(f64 C) vs mjwarp(f32) 单步一致性。容差反映 f32 引擎差异，非 bug。
+"""classic(f64 C) vs qd(f32) 单步一致性。容差反映 f32 引擎差异，非 bug。
 
 API 调用形式以 Task A4 Step 2 实测记录为准（yuvaltassa#1 rebase 后的分支）:
     from mjlab.sim.sim import SimulationCfg, make_simulation
@@ -23,7 +23,7 @@ def _make(backend: str, nworld: int):
     return make_simulation(num_envs=nworld, cfg=cfg, model=model, device="cpu")
 
 
-@pytest.mark.parametrize("backend", ["classic", "warp"])
+@pytest.mark.parametrize("backend", ["classic", "qd"])
 def test_one_step_finite(backend):
     sim = _make(backend, nworld=4)
     sim.reset()
@@ -32,14 +32,14 @@ def test_one_step_finite(backend):
     assert qpos.shape[0] == 4 and np.isfinite(np.asarray(qpos)).all()
 
 
-def test_classic_vs_warp_one_step_close():
+def test_classic_vs_qd_one_step_close():
     qs = {}
-    for backend in ("classic", "warp"):
+    for backend in ("classic", "qd"):
         sim = _make(backend, nworld=4)
         sim.reset()
         np.random.default_rng(0)
         sim.data.qvel[:] = 0.05
         sim.step()
         qs[backend] = np.asarray(sim.data.qpos)
-    diff = np.abs(qs["classic"] - qs["warp"]).max()
+    diff = np.abs(qs["classic"] - qs["qd"]).max()
     assert diff < 1e-3, f"单步 qpos 最大偏差 {diff}（f64 vs f32 容差 1e-3 rad）"

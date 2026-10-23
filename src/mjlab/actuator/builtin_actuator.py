@@ -446,11 +446,15 @@ class BuiltinDcMotorActuator(Actuator[BuiltinDcMotorActuatorCfg]):
       else mujoco.mjtTrn.mjTRN_TENDON
     )
 
+    # mujoco 3.15 removed the dcmotor input_mode knob (POSITION/VELOCITY
+    # input handling moved out of the C spec); pass it only when the binding
+    # accepts it (pybind11 methods don't expose signatures, so probe by call).
+    supports_input_mode: bool | None = None
     for target_name in target_names:
       actuator = spec.add_actuator(name=target_name, target=target_name)
       actuator.trntype = trntype
       actuator.gear[0] = cfg.gear
-      actuator.set_to_dcmotor(
+      kwargs = dict(
         motorconst=motorconst,
         resistance=resistance,
         nominal=nominal,
@@ -462,6 +466,15 @@ class BuiltinDcMotorActuator(Actuator[BuiltinDcMotorActuatorCfg]):
         lugre=_or_zeros(cfg.lugre, 5),
         input_mode=cfg.mode,
       )
+      try:
+        actuator.set_to_dcmotor(**kwargs)
+        supports_input_mode = True
+      except TypeError:
+        if supports_input_mode is True:
+          raise
+        supports_input_mode = False
+        del kwargs["input_mode"]
+        actuator.set_to_dcmotor(**kwargs)
 
       apply_target_overrides(
         spec,

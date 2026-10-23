@@ -9,12 +9,12 @@ from enum import Enum
 from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeVar
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 
 from mjlab.utils.buffers import DelayBuffer
 
 if TYPE_CHECKING:
+  import mujoco_qd as mjwarp
   from mjlab.entity import Entity
   from mjlab.entity.data import EntityData
 

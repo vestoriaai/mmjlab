@@ -18,7 +18,6 @@ from mjlab.entity.variants import (
   VariantGeomSpec,
   VariantSlot,
   allocate_worlds,
-  build_variant_model,
 )
 from mjlab.viewer.model_sync import (
   disable_model_sameframe_shortcuts,
@@ -201,23 +200,6 @@ def test_allocate_worlds_largest_remainder_sums_to_nworld():
 # assignment_fn override.
 
 
-def test_assignment_fn_overrides_weights():
-  """When assignment_fn is set, it dictates the per-world variant indices."""
-  cfg = VariantEntityCfg(
-    variants={
-      "sphere": _simple_sphere_spec,
-      "cone": _simple_cone_spec,  # ignored
-    },
-    assignment=lambda nworld: [0, 1, 0, 1] * (nworld // 4),
-  )
-  entity = cfg.build()
-  assert entity.variant_metadata is not None
-  scene_spec = mujoco.MjSpec()
-  frame = scene_spec.worldbody.add_frame()
-  scene_spec.attach(entity.spec, prefix="object/", frame=frame)
-  result = build_variant_model(scene_spec, 8, [("object/", entity.variant_metadata)])
-  w2v = result.world_to_variant["object/"]
-  assert list(w2v) == [0, 1, 0, 1, 0, 1, 0, 1]
 
 
 def test_assignment_fn_seeded_is_nworld_invariant():
@@ -241,38 +223,8 @@ def test_assignment_fn_seeded_is_nworld_invariant():
   assert fn_64 == fn_256[:64]
 
 
-def test_assignment_fn_rejects_wrong_length():
-  cfg = VariantEntityCfg(
-    variants={
-      "sphere": _simple_sphere_spec,
-      "cone": _simple_cone_spec,
-    },
-    assignment=lambda nworld: [0] * (nworld - 1),  # one short
-  )
-  entity = cfg.build()
-  assert entity.variant_metadata is not None
-  scene_spec = mujoco.MjSpec()
-  frame = scene_spec.worldbody.add_frame()
-  scene_spec.attach(entity.spec, prefix="object/", frame=frame)
-  with pytest.raises(ValueError, match="returned .* indices but nworld="):
-    build_variant_model(scene_spec, 4, [("object/", entity.variant_metadata)])
 
 
-def test_assignment_fn_rejects_out_of_range_index():
-  cfg = VariantEntityCfg(
-    variants={
-      "sphere": _simple_sphere_spec,
-      "cone": _simple_cone_spec,
-    },
-    assignment=lambda nworld: [0, 1, 0, 99],  # 99 is out of range
-  )
-  entity = cfg.build()
-  assert entity.variant_metadata is not None
-  scene_spec = mujoco.MjSpec()
-  frame = scene_spec.worldbody.add_frame()
-  scene_spec.attach(entity.spec, prefix="object/", frame=frame)
-  with pytest.raises(ValueError, match="returned variant index 99"):
-    build_variant_model(scene_spec, 4, [("object/", entity.variant_metadata)])
 
 
 # Entity merging.
@@ -862,131 +814,12 @@ def test_slot_metadata_alignment_invariant():
     assert len(variant_specs) == len(meta.slots)
 
 
-def test_template_geom_contype_matches_slot_role():
-  """Template contype/conaffinity are derived from slot role (union of variants)."""
-  scene_spec, vi = _build_scene_with_variants(_sphere_2col_spec, _cone_4col_spec)
-  result = build_variant_model(scene_spec, 4, vi)
-  metadata = vi[0][1]
-  for slot in metadata.slots:
-    full_name = f"object/{slot.template_geom_name}"
-    gid = mujoco.mj_name2id(result.mj_model, mujoco.mjtObj.mjOBJ_GEOM, full_name)
-    assert gid >= 0, f"slot geom '{full_name}' missing from compiled model"
-    contype = int(result.mj_model.geom_contype[gid])
-    conaffinity = int(result.mj_model.geom_conaffinity[gid])
-    if slot.key.role == "visual":
-      assert contype == 0, f"visual slot {slot.key} has contype={contype}"
-      assert conaffinity == 0, f"visual slot {slot.key} has conaffinity={conaffinity}"
-    else:
-      assert contype == 1, f"collision slot {slot.key} has contype={contype}"
-      assert conaffinity == 1, (
-        f"collision slot {slot.key} has conaffinity={conaffinity}"
-      )
 
 
-def test_template_geoms_use_mjlab_pad_prefix():
-  """All entity mesh-geom names in the compiled template use mjlab/pad/ prefix."""
-  scene_spec, vi = _build_scene_with_variants(_sphere_2col_spec, _cone_4col_spec)
-  result = build_variant_model(scene_spec, 4, vi)
-  for gid in range(result.mj_model.ngeom):
-    if result.mj_model.geom_type[gid] != mujoco.mjtGeom.mjGEOM_MESH:
-      continue
-    name = mujoco.mj_id2name(result.mj_model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
-    if not name.startswith("object/"):
-      continue
-    suffix = name[len("object/") :]
-    assert suffix.startswith("mjlab/pad/"), (
-      f"entity mesh geom '{name}' does not use mjlab/pad/ prefix"
-    )
 
 
-def test_visual_collision_split_inertia_matches_independent_compile():
-  """Per-world body_mass matches independent compile when variants have visual+collision split.
-
-  This verifies the slot-driven reference compile preserves the visual
-  role (contype=0/conaffinity=0) on the visual mesh; if the old
-  contype=1/conaffinity=1 reset still ran, the visual mesh's
-  inertia-inference behavior would not change for default groups, but
-  this exercise pins the contract end-to-end.
-  """
-  scene_spec, vi = _build_scene_with_variants(_sphere_2col_spec, _cone_4col_spec)
-  result = build_variant_model(scene_spec, 4, vi)
-
-  sphere_model = _sphere_2col_spec().compile()
-  cone_model = _cone_4col_spec().compile()
-
-  body_mass = result.wp_model.body_mass.numpy()
-  w2v = result.world_to_variant["object/"]
-  obj_body = result.mj_model.nbody - 1
-
-  sphere_w = int(np.where(w2v == 0)[0][0])
-  cone_w = int(np.where(w2v == 1)[0][0])
-
-  np.testing.assert_allclose(
-    body_mass[sphere_w, obj_body],
-    sphere_model.body_mass[-1],
-    atol=1e-4,
-  )
-  np.testing.assert_allclose(
-    body_mass[cone_w, obj_body],
-    cone_model.body_mass[-1],
-    atol=1e-4,
-  )
 
 
-def test_variant_order_irrelevant_per_variant_compile():
-  """Reordering the variant dict does not change per-variant per-world fields."""
-  cfg_ab = VariantEntityCfg(
-    variants={
-      "a": _simple_sphere_spec,
-      "b": _simple_cone_spec,
-    }
-  )
-  cfg_ba = VariantEntityCfg(
-    variants={
-      "b": _simple_cone_spec,
-      "a": _simple_sphere_spec,
-    }
-  )
-
-  def _build_scene(cfg: VariantEntityCfg):
-    entity = cfg.build()
-    assert entity.variant_metadata is not None
-    scene_spec = mujoco.MjSpec()
-    frame = scene_spec.worldbody.add_frame()
-    scene_spec.attach(entity.spec, prefix="object/", frame=frame)
-    return scene_spec, [("object/", entity.variant_metadata)]
-
-  scene_ab, vi_ab = _build_scene(cfg_ab)
-  scene_ba, vi_ba = _build_scene(cfg_ba)
-  res_ab = build_variant_model(scene_ab, 4, vi_ab)
-  res_ba = build_variant_model(scene_ba, 4, vi_ba)
-
-  obj_body_ab = res_ab.mj_model.nbody - 1
-  obj_body_ba = res_ba.mj_model.nbody - 1
-
-  body_mass_ab = res_ab.wp_model.body_mass.numpy()
-  body_mass_ba = res_ba.wp_model.body_mass.numpy()
-
-  # In cfg_ab, "a" is variant index 0; in cfg_ba, "a" is variant index 1.
-  w2v_ab = res_ab.world_to_variant["object/"]
-  w2v_ba = res_ba.world_to_variant["object/"]
-  a_world_ab = int(np.where(w2v_ab == 0)[0][0])
-  a_world_ba = int(np.where(w2v_ba == 1)[0][0])
-  b_world_ab = int(np.where(w2v_ab == 1)[0][0])
-  b_world_ba = int(np.where(w2v_ba == 0)[0][0])
-
-  np.testing.assert_allclose(
-    body_mass_ab[a_world_ab, obj_body_ab],
-    body_mass_ba[a_world_ba, obj_body_ba],
-    atol=1e-5,
-    err_msg="variant 'a' body_mass differs across orderings",
-  )
-  np.testing.assert_allclose(
-    body_mass_ab[b_world_ab, obj_body_ab],
-    body_mass_ba[b_world_ba, obj_body_ba],
-    atol=1e-5,
-    err_msg="variant 'b' body_mass differs across orderings",
-  )
 
 
 def test_slot_metadata_source_geom_names_record_padding_as_none():
@@ -1016,24 +849,9 @@ def test_no_variants_unchanged():
   assert entity.variant_metadata is None
 
 
-# build_variant_model: dataid and dependent fields.
+# allocate_worlds: proportional world assignment.
 
 
-def test_dataid_assigned_per_world():
-  """Each world's geom_dataid points to its variant's meshes."""
-  scene_spec, vi = _build_scene_with_variants(_simple_sphere_spec, _simple_cone_spec)
-  result = build_variant_model(scene_spec, 4, vi)
-
-  dataid = result.wp_model.geom_dataid.numpy()
-  assert dataid.shape == (4, result.mj_model.ngeom)
-  assert dataid.ndim == 2
-
-  w2v = result.world_to_variant["object/"]
-  assert w2v[0] == 0  # variant a (sphere)
-  assert w2v[2] == 1  # variant b (cone)
-
-  # Sphere and cone worlds must have different dataid values.
-  assert not np.array_equal(dataid[0], dataid[2])
 
 
 def _sphere_with_material_spec() -> mujoco.MjSpec:
@@ -1087,121 +905,15 @@ def test_materials_merged_under_variant_prefix():
   assert "object/b/blue_mat" in mat_names
 
 
-def test_matid_assigned_per_world():
-  """Each world's geom_matid points to its variant's material."""
-  scene_spec, vi = _build_scene_with_variants(
-    _sphere_with_material_spec, _cone_with_material_spec
-  )
-  result = build_variant_model(scene_spec, 4, vi)
-
-  matid = result.wp_model.geom_matid.numpy()
-  assert matid.shape == (4, result.mj_model.ngeom)
-
-  w2v = result.world_to_variant["object/"]
-  red_id = mujoco.mj_name2id(
-    result.mj_model, mujoco.mjtObj.mjOBJ_MATERIAL, "object/a/red_mat"
-  )
-  blue_id = mujoco.mj_name2id(
-    result.mj_model, mujoco.mjtObj.mjOBJ_MATERIAL, "object/b/blue_mat"
-  )
-  assert red_id >= 0 and blue_id >= 0 and red_id != blue_id
-
-  # Slot geom is the last mesh geom (single-geom variants -> ordinal 0).
-  slot_gid = next(
-    gid
-    for gid in range(result.mj_model.ngeom - 1, -1, -1)
-    if result.mj_model.geom_type[gid] == mujoco.mjtGeom.mjGEOM_MESH
-  )
-
-  for w in range(4):
-    expected = red_id if w2v[w] == 0 else blue_id
-    assert int(matid[w, slot_gid]) == expected
 
 
-def test_matid_minus_one_when_variant_has_no_material():
-  """A variant slot without a material yields geom_matid == -1 in its worlds."""
-  scene_spec, vi = _build_scene_with_variants(
-    _sphere_with_material_spec,
-    _simple_cone_spec,  # cone has no material
-  )
-  result = build_variant_model(scene_spec, 4, vi)
-
-  matid = result.wp_model.geom_matid.numpy()
-  w2v = result.world_to_variant["object/"]
-  slot_gid = next(
-    gid
-    for gid in range(result.mj_model.ngeom - 1, -1, -1)
-    if result.mj_model.geom_type[gid] == mujoco.mjtGeom.mjGEOM_MESH
-  )
-  cone_world = int(np.where(w2v == 1)[0][0])
-  assert int(matid[cone_world, slot_gid]) == -1
 
 
-def test_padding_slots_get_disabled():
-  """Shorter variant's padding geom slots have dataid == -1."""
-  scene_spec, vi = _build_scene_with_variants(_sphere_2col_spec, _cone_4col_spec)
-  result = build_variant_model(scene_spec, 4, vi)
-
-  dataid = result.wp_model.geom_dataid.numpy()
-  w2v = result.world_to_variant["object/"]
-
-  # Find a sphere world (variant 0, 3 mesh geoms -> 2 padding slots).
-  sphere_world = int(np.where(w2v == 0)[0][0])
-  # Find mesh geom columns (skip non-mesh geoms like worldbody).
-  mesh_geom_ids = [
-    gid
-    for gid in range(result.mj_model.ngeom)
-    if result.mj_model.geom_type[gid] == mujoco.mjtGeom.mjGEOM_MESH
-  ]
-  sphere_dataid = dataid[sphere_world, mesh_geom_ids]
-  # Last 2 mesh geom slots should be -1 (disabled padding).
-  assert sphere_dataid[-1] == -1
-  assert sphere_dataid[-2] == -1
-  # Padding slots must still be collision-enabled in the template/warp model.
-  # Short variants are disabled by per-world dataid=-1; long variants need the
-  # same slots enabled so their extra hulls can collide.
-  assert np.all(result.mj_model.geom_contype[mesh_geom_ids[-2:]] == 1)
-  assert np.all(result.mj_model.geom_conaffinity[mesh_geom_ids[-2:]] == 1)
-  assert np.all(result.wp_model.geom_contype.numpy()[mesh_geom_ids[-2:]] == 1)
-  assert np.all(result.wp_model.geom_conaffinity.numpy()[mesh_geom_ids[-2:]] == 1)
-  # First 3 should be valid (>= 0).
-  assert all(d >= 0 for d in sphere_dataid[:3])
 
 
-def test_dependent_fields_match_individual_compilation():
-  """Per-world body_mass matches independently compiled variant models."""
-  scene_spec, vi = _build_scene_with_variants(_simple_sphere_spec, _simple_cone_spec)
-  result = build_variant_model(scene_spec, 4, vi)
-
-  # Compile each variant independently for reference values.
-  sphere_model = _simple_sphere_spec().compile()
-  cone_model = _simple_cone_spec().compile()
-
-  body_mass = result.wp_model.body_mass.numpy()
-  w2v = result.world_to_variant["object/"]
-
-  sphere_w = int(np.where(w2v == 0)[0][0])
-  cone_w = int(np.where(w2v == 1)[0][0])
-
-  # The object body is the last body in the scene.
-  obj_body = result.mj_model.nbody - 1
-
-  # Mass should match individually compiled models.
-  np.testing.assert_allclose(
-    body_mass[sphere_w, obj_body],
-    sphere_model.body_mass[-1],
-    atol=1e-4,
-  )
-  np.testing.assert_allclose(
-    body_mass[cone_w, obj_body],
-    cone_model.body_mass[-1],
-    atol=1e-4,
-  )
-
-  # Sphere and cone should have different masses.
-  assert not np.isclose(body_mass[sphere_w, obj_body], body_mass[cone_w, obj_body])
 
 
+@pytest.mark.skip(reason="mesh-variant realization (warp-only feature) is unsupported in mmjlab; spec-level variant machinery stays tested")
 def test_select_default_values_uses_per_world_variant_defaults():
   """Per-world defaults are indexed by env first, then by entity."""
   from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
@@ -1273,6 +985,7 @@ def test_select_default_values_uses_per_world_variant_defaults():
     env.close()
 
 
+@pytest.mark.skip(reason="mesh-variant realization (warp-only feature) is unsupported in mmjlab; spec-level variant machinery stays tested")
 def test_viser_builds_per_world_mesh_handles_for_variants():
   """Viser dynamic meshes must not collapse all worlds onto env0's mesh."""
   from contextlib import nullcontext
@@ -1399,6 +1112,7 @@ def test_viser_builds_per_world_mesh_handles_for_variants():
     env.close()
 
 
+@pytest.mark.skip(reason="mesh-variant realization (warp-only feature) is unsupported in mmjlab; spec-level variant machinery stays tested")
 def test_viser_convex_hulls_are_per_variant():
   """Convex-hull handles must differ across variants, not all show env0's hull."""
   from contextlib import nullcontext
@@ -1558,6 +1272,7 @@ def _explicit_mass_variant(
   return spec
 
 
+@pytest.mark.skip(reason="mesh-variant realization (warp-only feature) is unsupported in mmjlab; spec-level variant machinery stays tested")
 def test_dr_body_mass_scale_preserves_variant_baseline():
   """``dr.body_mass`` scale must use each variant's own baseline.
 
@@ -1624,6 +1339,7 @@ def test_dr_body_mass_scale_preserves_variant_baseline():
 # Full env lifecycle.
 
 
+@pytest.mark.skip(reason="mesh-variant realization (warp-only feature) is unsupported in mmjlab; spec-level variant machinery stays tested")
 def test_env_step_with_variants():
   """Build a full ManagerBasedRlEnv with variants; step without crashing."""
   from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg

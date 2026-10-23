@@ -22,14 +22,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 
 from mjlab.entity import Entity
 from mjlab.sensor.sensor import Sensor, SensorCfg
+
+if TYPE_CHECKING:
+  import mujoco_qd as mjwarp
+
 
 _CONTACT_DATA_MAP = {
   "found": 0,

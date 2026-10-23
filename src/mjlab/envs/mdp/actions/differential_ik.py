@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-import mujoco_warp as mjwarp
 import numpy as np
 import torch
-import warp as wp
 
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from mjlab.utils.lab_api.math import (
@@ -37,7 +35,7 @@ def _jac_torch(
   Mirrors ``mj_jac``: for dof i whose body is the target body or one of its
   kinematic ancestors, ``jacr_i = cdof_ang_i`` and ``jacp_i = cdof_lin_i +
   cross(cdof_ang_i, point - subtree_com[body_rootid[body]])``; all other
-  dofs are zero (the C engine skips them; mjwarp zeroes them via
+  dofs are zero (the C engine skips them; # qd engine zeroes them via
   ``body_isdofancestor``).
 
   Args:
@@ -205,24 +203,11 @@ class DifferentialIKAction(ActionTerm):
     nworld = self.num_envs
     nv = self._env.sim.mj_model.nv
 
-    if self._env.sim.cfg.backend == "classic":
-      # classic backend: plain torch buffers; the jacobian is computed with
-      # _jac_torch from the batched cdof/subtree_com views.
-      self._jacp_torch = torch.zeros(nworld, 3, nv, device=self.device)
-      self._jacr_torch = torch.zeros(nworld, 3, nv, device=self.device)
-      self._point_torch = torch.zeros(nworld, 3, device=self.device)
-      return
-
-    with wp.ScopedDevice(self._env.sim.wp_device):
-      self._jacp_wp = wp.zeros((nworld, 3, nv), dtype=float)
-      self._jacr_wp = wp.zeros((nworld, 3, nv), dtype=float)
-      self._point_wp = wp.zeros(nworld, dtype=wp.vec3)
-      self._body_wp = wp.zeros(nworld, dtype=wp.int32)
-      self._body_wp.fill_(self._body_id)
-
-    self._jacp_torch = wp.to_torch(self._jacp_wp)
-    self._jacr_torch = wp.to_torch(self._jacr_wp)
-    self._point_torch = wp.to_torch(self._point_wp).view(nworld, 3)
+    # Plain torch buffers; the jacobian is computed with _jac_torch from the
+    # batched cdof/subtree_com views.
+    self._jacp_torch = torch.zeros(nworld, 3, nv, device=self.device)
+    self._jacr_torch = torch.zeros(nworld, 3, nv, device=self.device)
+    self._point_torch = torch.zeros(nworld, 3, device=self.device)
 
   @property
   def action_dim(self) -> int:
@@ -364,25 +349,14 @@ class DifferentialIKAction(ActionTerm):
 
   def _compute_jacobian(self) -> None:
     """Compute the frame Jacobian."""
-    if self._env.sim.cfg.backend == "classic":
-      model = self._env.sim.mj_model
-      data = self._env.sim.data
-      self._jacp_torch, self._jacr_torch = _jac_torch(
-        data.cdof,
-        data.subtree_com,
-        model.dof_bodyid,
-        model.body_rootid,
-        model.body_parentid,
-        self._point_torch,
-        self._body_id,
-      )
-      return
-    with wp.ScopedDevice(self._env.sim.wp_device):
-      mjwarp.jac(
-        self._env.sim.wp_model,
-        self._env.sim.wp_data,
-        self._jacp_wp,
-        self._jacr_wp,
-        self._point_wp,
-        self._body_wp,
-      )
+    model = self._env.sim.mj_model
+    data = self._env.sim.data
+    self._jacp_torch, self._jacr_torch = _jac_torch(
+      data.cdof,
+      data.subtree_com,
+      model.dof_bodyid,
+      model.body_rootid,
+      model.body_parentid,
+      self._point_torch,
+      self._body_id,
+    )

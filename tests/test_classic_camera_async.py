@@ -22,6 +22,15 @@ import torch
 
 from mjlab.sensor.camera_cpu import AsyncCpuCameraContext, CpuCameraContext
 
+
+def _qd_arch_is_metal() -> bool:
+  try:
+    from mjlab.sensor import raycast_qd
+
+    return raycast_qd.qd_arch() == "metal"
+  except Exception:
+    return False
+
 # floater：freejoint 动体（同 test_classic_camera 场景），供运动滞后测试平移。
 SCENE_XML = """
 <mujoco>
@@ -251,12 +260,18 @@ def test_async_sense_call_latency():
     sim_a.close()
 
 
+@pytest.mark.skipif(
+    not _qd_arch_is_metal(), reason="130ms 吞吐门按 qd.metal 渲染器口径校准"
+)
 def test_async_render_thread_throughput():
   """性能：渲染线程吞吐 ≥ 同步 80%（每帧 ≤130ms，且 ≤1.25×sync min）。
 
   统计口径：两侧均为同轮实测取 min；async 测法 = 提交后 wait_for_frame
   该帧完成（串行测得线程单帧净耗时）。
   """
+  from conftest import require_quiet_machine
+
+  require_quiet_machine()
   # sync 基线（同场景同分辨率，协议同 test_camera_perf_64）。
   scene_s, sim_s = _make(num_envs=64, async_render=False)
   try:

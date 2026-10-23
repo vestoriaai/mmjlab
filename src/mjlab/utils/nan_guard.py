@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Iterator
 
 import mujoco
-import mujoco_warp as mjwarp
 import numpy as np
 import torch
 
@@ -55,39 +54,39 @@ class NanGuard:
     self.mj_model = mj_model
     self.mj_data = mujoco.MjData(mj_model)
 
-  def capture(self, wp_data: mjwarp.Data) -> None:
+  def capture(self, data) -> None:
     """Capture current simulation state to buffer."""
     if not self.enabled:
       return
 
     state = {
       "step": self.step_counter,
-      "qpos": wp_data.qpos.clone(),
-      "qvel": wp_data.qvel.clone(),
+      "qpos": data.qpos.clone(),
+      "qvel": data.qvel.clone(),
     }
     if self.mj_model.na > 0:
-      state["act"] = wp_data.act.clone()
+      state["act"] = data.act.clone()
     if self.mj_model.nmocap > 0:
-      state["mocap_pos"] = wp_data.mocap_pos.clone()
-      state["mocap_quat"] = wp_data.mocap_quat.clone()
+      state["mocap_pos"] = data.mocap_pos.clone()
+      state["mocap_quat"] = data.mocap_quat.clone()
 
     self.buffer.append(state)
     self.step_counter += 1
 
   @contextmanager
-  def watch(self, wp_data: mjwarp.Data) -> Iterator[None]:
+  def watch(self, data) -> Iterator[None]:
     """Context manager that captures state before and checks for NaN/Inf after.
 
     Usage:
-      with nan_guard.watch(wp_data):
-        mjwarp.step(wp_model, wp_data)
+      with nan_guard.watch(data):
+        sim.step()
     """
-    self.capture(wp_data)
+    self.capture(data)
     yield
-    self.check_and_dump(wp_data)
+    self.check_and_dump(data)
 
   @staticmethod
-  def detect_nans(data: mjwarp.Data) -> torch.Tensor:
+  def detect_nans(data) -> torch.Tensor:
     """Detect NaN/Inf values in physics state (qpos, qvel, qacc, qacc_warmstart).
 
     Args:
@@ -113,7 +112,7 @@ class NanGuard:
 
     return nan_mask
 
-  def check_and_dump(self, data: mjwarp.Data) -> bool:
+  def check_and_dump(self, data) -> bool:
     """Check for NaN/Inf and dump buffer if detected.
 
     Returns:

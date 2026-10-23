@@ -14,10 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
-import warp as wp
-from mujoco_warp import rays
 
 from mjlab.entity import Entity
 from mjlab.sensor.builtin_sensor import ObjRef
@@ -25,31 +22,10 @@ from mjlab.sensor.sensor import Sensor, SensorCfg
 from mjlab.utils.lab_api.math import quat_from_matrix
 
 if TYPE_CHECKING:
-  from mjlab.sensor.sensor_context import SensorContext
+  from mjlab.sensor.sensor_context_cpu import SensorContextCPU
   from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 RayAlignment = Literal["base", "yaw", "world"]
-
-# NOTE: Not publicly exposed by mujoco_warp.
-_vec6 = wp.types.vector(length=6, dtype=float)
-_ALL_GROUPS = _vec6(-1, -1, -1, -1, -1, -1)
-
-
-def _geom_groups_to_vec6(groups: tuple[int, ...] | None):  # -> _vec6
-  """Convert geom group tuple to mujoco_warp vec6 format.
-
-  In the vec6 format, -1 means include and 0 means exclude.
-  """
-  if groups is None:
-    return _ALL_GROUPS
-  out = [0, 0, 0, 0, 0, 0]
-  for g in groups:
-    if not 0 <= g < mujoco.mjNGROUP:
-      raise ValueError(
-        f"include_geom_groups must be in [0, {mujoco.mjNGROUP}), got {g}"
-      )
-    out[g] = -1
-  return _vec6(*out)
 
 
 @dataclass
@@ -448,11 +424,10 @@ class RayCastSensor(Sensor[RayCastData]):
   def __init__(self, cfg: RayCastSensorCfg) -> None:
     super().__init__()
     self.cfg = cfg
-    self._data: mjwarp.Data | None = None
-    self._model: mjwarp.Model | None = None
+    self._data = None
+    self._model = None
     self._mj_model: mujoco.MjModel | None = None
     self._device: str | None = None
-    self._wp_device: wp.Device | None = None
 
     # Per-frame info: list of (frame_type, obj_id, body_id).
     self._frame_infos: list[tuple[Literal["body", "site", "geom"], int, int]] = []
@@ -462,14 +437,6 @@ class RayCastSensor(Sensor[RayCastData]):
     self._local_offsets: torch.Tensor | None = None
     self._local_directions: torch.Tensor | None = None  # [rays_per_frame, 3]
     self._num_rays: int = 0
-
-    self._ray_pnt: wp.array | None = None
-    self._ray_vec: wp.array | None = None
-    self._ray_dist: wp.array | None = None
-    self._ray_geomid: wp.array | None = None
-    self._ray_normal: wp.array | None = None
-    self._ray_bodyexclude: wp.array | None = None
-    self._geomgroup = _vec6(-1, -1, -1, -1, -1, -1)
 
     self._distances: torch.Tensor | None = None
     self._normals_w: torch.Tensor | None = None
@@ -485,7 +452,7 @@ class RayCastSensor(Sensor[RayCastData]):
     self._cached_frame_mat: torch.Tensor | None = None
 
     self._debug_vis_enabled: bool = True
-    self._ctx: SensorContext | None = None
+    self._ctx: SensorContextCPU | None = None
 
   def edit_spec(
     self,
@@ -497,15 +464,14 @@ class RayCastSensor(Sensor[RayCastData]):
   def initialize(
     self,
     mj_model: mujoco.MjModel,
-    model: mjwarp.Model,
-    data: mjwarp.Data,
+    model,
+    data,
     device: str,
   ) -> None:
     self._data = data
     self._model = model
     self._mj_model = mj_model
     self._device = device
-    self._wp_device = wp.get_device(device)
     num_envs = data.nworld
 
     # Normalize frame to tuple.
@@ -542,25 +508,6 @@ class RayCastSensor(Sensor[RayCastData]):
     self._num_rays_per_frame = self._local_offsets.shape[0]
     self._num_rays = self._num_frames * self._num_rays_per_frame
 
-    self._ray_pnt = wp.zeros((num_envs, self._num_rays), dtype=wp.vec3, device=device)
-    self._ray_vec = wp.zeros((num_envs, self._num_rays), dtype=wp.vec3, device=device)
-    self._ray_dist = wp.zeros((num_envs, self._num_rays), dtype=float, device=device)
-    self._ray_geomid = wp.zeros((num_envs, self._num_rays), dtype=int, device=device)
-    self._ray_normal = wp.zeros(
-      (num_envs, self._num_rays), dtype=wp.vec3, device=device
-    )
-
-    # Body exclusion: each frame's body_id repeated N times.
-    if self.cfg.exclude_parent_body:
-      body_excludes: list[int] = []
-      for _, _, body_id in self._frame_infos:
-        body_excludes.extend([body_id] * self._num_rays_per_frame)
-    else:
-      body_excludes = [-1] * self._num_rays
-    self._ray_bodyexclude = wp.array(body_excludes, dtype=int, device=device)
-
-    self._geomgroup = _geom_groups_to_vec6(self.cfg.include_geom_groups)
-
     # Pre-allocate output tensors so shape inference works before
     # the first sense() call.
     F = self._num_frames
@@ -572,14 +519,12 @@ class RayCastSensor(Sensor[RayCastData]):
     self._frame_pos_w = torch.zeros(num_envs, F, 3, device=device)
     self._frame_quat_w = torch.zeros(num_envs, F, 4, device=device)
 
-    assert self._wp_device is not None
-
   @property
   def include_geom_groups(self) -> tuple[int, ...] | None:
     return self.cfg.include_geom_groups
 
-  def set_context(self, ctx: SensorContext) -> None:
-    """Wire this sensor to a SensorContext for BVH-accelerated raycasting."""
+  def set_context(self, ctx: SensorContextCPU) -> None:
+    """Wire this sensor to a SensorContextCPU for CPU/qd raycasting."""
     self._ctx = ctx
 
   def _compute_data(self) -> RayCastData:
@@ -704,133 +649,6 @@ class RayCastSensor(Sensor[RayCastData]):
               )
 
   # Private methods.
-
-  def prepare_rays(self) -> None:
-    """PRE-GRAPH: Transform local rays to world frame.
-
-    Reads body/site/geom poses via PyTorch and writes world-frame ray
-    origins and directions into Warp arrays. Caches the frame pose and
-    world-frame tensors for postprocess_rays().
-    """
-    assert self._data is not None and self._model is not None
-    assert self._local_offsets is not None and self._local_directions is not None
-
-    # Gather per-frame poses: [B, F, 3] and [B, F, 3, 3].
-    # Position is always the physical world position. Alignment only
-    # affects ray directions (applied to frame_mat below).
-    pos_list: list[torch.Tensor] = []
-    mat_list: list[torch.Tensor] = []
-    for frame_type, obj_id, _ in self._frame_infos:
-      if frame_type == "body":
-        pos_list.append(self._data.xpos[:, obj_id])
-        mat_list.append(self._data.xmat[:, obj_id].view(-1, 3, 3))
-      elif frame_type == "site":
-        pos_list.append(self._data.site_xpos[:, obj_id])
-        mat_list.append(self._data.site_xmat[:, obj_id].view(-1, 3, 3))
-      else:  # geom
-        pos_list.append(self._data.geom_xpos[:, obj_id])
-        mat_list.append(self._data.geom_xmat[:, obj_id].view(-1, 3, 3))
-
-    frame_pos = torch.stack(pos_list, dim=1)  # [B, F, 3]
-    frame_mat = torch.stack(mat_list, dim=1)  # [B, F, 3, 3]
-
-    B, F = frame_pos.shape[:2]
-    N = self._num_rays_per_frame
-
-    # Compute alignment rotation for all frames at once.
-    rot_mat = self._compute_alignment_rotation(frame_mat.reshape(B * F, 3, 3)).reshape(
-      B, F, 3, 3
-    )
-
-    # Compute world offsets and directions: [B, F, N, 3].
-    world_offsets = torch.einsum("bfij,nj->bfni", rot_mat, self._local_offsets)
-    world_origins = frame_pos[:, :, None, :] + world_offsets
-    world_rays = torch.einsum("bfij,nj->bfni", rot_mat, self._local_directions)
-
-    # Flatten to [B, F*N, 3] for raycasting.
-    world_origins_flat = world_origins.reshape(B, F * N, 3)
-    world_rays_flat = world_rays.reshape(B, F * N, 3)
-
-    assert self._ray_pnt is not None and self._ray_vec is not None
-    pnt_torch = wp.to_torch(self._ray_pnt).view(B, self._num_rays, 3)
-    vec_torch = wp.to_torch(self._ray_vec).view(B, self._num_rays, 3)
-    pnt_torch.copy_(world_origins_flat)
-    vec_torch.copy_(world_rays_flat)
-
-    # Cache for postprocess_rays() and debug_vis().
-    self._cached_world_origins = world_origins_flat
-    self._cached_world_rays = world_rays_flat
-    self._cached_frame_pos = frame_pos  # [B, F, 3]
-    self._cached_frame_mat = frame_mat  # [B, F, 3, 3]
-
-  def raycast_kernel(self, rc: mjwarp.RenderContext) -> None:
-    """IN-GRAPH: Execute BVH-accelerated raycast kernel."""
-    assert self._ray_pnt is not None
-    assert self._ray_vec is not None
-    assert self._ray_bodyexclude is not None
-    assert self._ray_dist is not None
-    assert self._ray_geomid is not None
-    assert self._ray_normal is not None
-    rays(
-      m=self._model.struct,  # type: ignore[attr-defined]
-      d=self._data.struct,  # type: ignore[attr-defined]
-      pnt=self._ray_pnt,  # type: ignore[invalid-argument-type]
-      vec=self._ray_vec,  # type: ignore[invalid-argument-type]
-      geomgroup=self._geomgroup,  # pyright: ignore[reportArgumentType]
-      flg_static=True,
-      bodyexclude=self._ray_bodyexclude,
-      dist=self._ray_dist,  # type: ignore[invalid-argument-type]
-      geomid=self._ray_geomid,  # type: ignore[invalid-argument-type]
-      normal=self._ray_normal,  # type: ignore[invalid-argument-type]
-      rc=rc,
-    )
-
-  def postprocess_rays(self) -> None:
-    """POST-GRAPH: Convert Warp outputs to PyTorch, compute hit positions."""
-    assert self._cached_world_origins is not None
-    assert self._cached_world_rays is not None
-    assert self._cached_frame_pos is not None
-    assert self._cached_frame_mat is not None
-
-    B = self._cached_frame_pos.shape[0]
-    F = self._num_frames
-
-    assert self._ray_dist is not None and self._ray_normal is not None
-    distances = wp.to_torch(self._ray_dist)
-    normals_w = wp.to_torch(self._ray_normal).view(B, self._num_rays, 3)
-    distances.masked_fill_(distances > self.cfg.max_distance, -1.0)
-
-    hit_mask = distances >= 0
-    # ``origin + ray * max(distance, 0)`` collapses miss rays to ``origin``
-    # (clamped distance is 0) without any branching.
-    clamped = distances.clamp(min=0.0)
-    self._hit_pos_w = (
-      self._cached_world_origins + self._cached_world_rays * clamped.unsqueeze(-1)
-    )
-
-    # Zero out normals for misses.
-    normals_w.masked_fill_(~hit_mask.unsqueeze(-1), 0.0)
-    self._distances = distances
-    self._normals_w = normals_w
-
-    # All frames: [B, F, 3] / [B, F, 4].
-    self._frame_pos_w = self._cached_frame_pos
-    self._frame_quat_w = quat_from_matrix(
-      self._cached_frame_mat.reshape(B * F, 3, 3)
-    ).reshape(B, F, 4)
-
-    # First frame for backward compat: [B, 3] / [B, 4].
-    assert self._frame_pos_w is not None and self._frame_quat_w is not None
-    self._pos_w = self._frame_pos_w[:, 0]
-    self._quat_w = self._frame_quat_w[:, 0]
-
-    # ``sense()`` runs after the decimation loop (which invalidates the cache)
-    # and after rewards may have already read ``.data``, repopulating the cache
-    # with pre-sense hit positions. Rebinding the tensors above leaves that
-    # cache pointing at the previous step's data, so invalidate here to force a
-    # recompute on the next ``.data`` access. Otherwise observations and debug
-    # visualization would lag one step behind the freshly sensed hits (#998).
-    self._invalidate_cache()
 
   def _compute_alignment_rotation(self, frame_mat: torch.Tensor) -> torch.Tensor:
     """Compute rotation matrix based on ray_alignment setting."""

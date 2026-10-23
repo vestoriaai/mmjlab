@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import mujoco
-import mujoco_warp as mjwarp
 import numpy as np
 import torch
 
@@ -14,18 +13,10 @@ from mjlab.entity import Entity, EntityCfg
 from mjlab.entity.variants import VariantMetadata
 from mjlab.sensor import BuiltinSensor, RayCastSensor, Sensor, SensorCfg
 from mjlab.sensor.camera_sensor import CameraSensor
-from mjlab.sensor.sensor_context import SensorContext
 from mjlab.terrains.terrain_entity import TerrainEntity, TerrainEntityCfg
 from mjlab.utils.spec import export_spec, non_default_option_fields
 
 _SCENE_XML = Path(__file__).parent / "scene.xml"
-
-
-def _is_classic_data(data: Any) -> bool:
-  """Whether the data bridge belongs to the classic (CPU) backend."""
-  from mjlab.sim.classic import ClassicData
-
-  return isinstance(data, ClassicData)
 
 
 @dataclass(kw_only=True)
@@ -64,7 +55,7 @@ class Scene:
     self._sensors: dict[str, Sensor] = {}
     self._terrain: TerrainEntity | None = None
     self._default_env_origins: torch.Tensor | None = None
-    self._sensor_context: SensorContext | None = None
+    self._sensor_context: SensorContextCPU | None = None
 
     self._spec = mujoco.MjSpec.from_file(str(_SCENE_XML))
     if self._cfg.extent is not None:
@@ -162,15 +153,15 @@ class Scene:
   # Methods.
 
   @property
-  def sensor_context(self) -> SensorContext | None:
+  def sensor_context(self) -> SensorContextCPU | None:
     """Shared sensing resources, or None if no cameras/raycasts."""
     return self._sensor_context
 
   def initialize(
     self,
     mj_model: mujoco.MjModel,
-    model: mjwarp.Model,
-    data: mjwarp.Data,
+    model,
+    data,
   ):
     self._default_env_origins = torch.zeros(
       (self._cfg.num_envs, 3), device=self._device, dtype=torch.float32
@@ -180,31 +171,21 @@ class Scene:
     for sensor in self._sensors.values():
       sensor.initialize(mj_model, model, data, self._device)
 
-    # Create SensorContext if any sensors require it.
+    # Create the sensor context if any sensors require it. Every backend
+    # senses through the CPU context (torch raycasts + qd/GL camera backends)
+    # against the bridged state.
     ctx_sensors = [s for s in self._sensors.values() if s.requires_sensor_context]
     if ctx_sensors:
       camera_sensors = [s for s in ctx_sensors if isinstance(s, CameraSensor)]
       raycast_sensors = [s for s in ctx_sensors if isinstance(s, RayCastSensor)]
-      if _is_classic_data(data):
-        # Classic backend: CPU sensing (torch raycasts + mujoco.Renderer)
-        # instead of the mujoco_warp render pipeline.
-        from mjlab.sensor.sensor_context_cpu import SensorContextCPU
+      from mjlab.sensor.sensor_context_cpu import SensorContextCPU
 
-        self._sensor_context = SensorContextCPU(
-          mj_model=mj_model,
-          data=data,
-          camera_sensors=camera_sensors,
-          raycast_sensors=raycast_sensors,
-        )
-      else:
-        self._sensor_context = SensorContext(
-          mj_model=mj_model,
-          model=model,
-          data=data,
-          camera_sensors=camera_sensors,
-          raycast_sensors=raycast_sensors,
-          device=self._device,
-        )
+      self._sensor_context = SensorContextCPU(
+        mj_model=mj_model,
+        data=data,
+        camera_sensors=camera_sensors,
+        raycast_sensors=raycast_sensors,
+      )
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     for ent in self._entities.values():

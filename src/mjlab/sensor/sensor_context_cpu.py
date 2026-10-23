@@ -1,11 +1,9 @@
-"""CPU sensor context for the classic backend.
+"""CPU sensor context shared by every mmjlab backend.
 
-Drop-in counterpart of :class:`mjlab.sensor.sensor_context.SensorContext`
-for ``backend='classic'``: wires raycast and camera sensors to CPU
-implementations (the general torch ray-intersection core in
-:mod:`mjlab.sensor.raycast_core` and ``mujoco.Renderer``) instead of the
-mujoco_warp render pipeline, and exposes the same ``sense()`` entry point
-used by :meth:`mjlab.sim.classic.ClassicSimulation.sense`.
+Wires raycast and camera sensors to CPU implementations (the general torch
+ray-intersection core in :mod:`mjlab.sensor.raycast_core` plus the qd/GL
+camera backends), and exposes the same ``sense()`` entry point consumed by
+``ClassicSimulation.sense`` and ``Simulation.sense``.
 """
 
 from __future__ import annotations
@@ -63,10 +61,8 @@ class SensorContextCPU:
     the async render thread when any sensor opts in.
 
     ``"auto"`` prefers the qd (Quadrants) batch renderer when importable,
-    then the mjwarp batch renderer, falling back to GL; ``"qd"`` /
-    ``"mjwarp"`` / ``"gl"`` force one path.
+    falling back to GL; ``"qd"`` / ``"gl"`` force one path.
     """
-    from mjlab.sensor.render_mjwarp import MjwarpCameraContext, is_available
     from mjlab.sensor.render_qd import QdCameraContext
     from mjlab.sensor.render_qd import is_available as qd_available
 
@@ -78,11 +74,9 @@ class SensorContextCPU:
       )
     backend = backends.pop()
     if backend == "auto":
-      backend = "qd" if qd_available() else ("mjwarp" if is_available() else "gl")
+      backend = "qd" if qd_available() else "gl"
     if backend == "qd":
       inner = QdCameraContext(mj_model, self.camera_sensors)
-    elif backend == "mjwarp":
-      inner = MjwarpCameraContext(mj_model, self.camera_sensors)
     else:
       inner = CpuCameraContext(mj_model, self.camera_sensors)
     if any(s.cfg.async_render for s in self.camera_sensors):

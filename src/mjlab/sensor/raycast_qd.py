@@ -96,7 +96,12 @@ def qd_arch() -> str | None:
 
 
 def _ensure_init() -> bool:
-  """Initialize quadrants once per process (metal > cuda > vulkan > cpu)."""
+  """Initialize quadrants once per process (metal > cuda > vulkan > cpu).
+
+  Delegates to the process-wide authority: if the qd physics backend already
+  initialized quadrants (e.g. on cpu), the render/raycast backends reuse that
+  arch instead of re-initializing and invalidating existing allocations.
+  """
   global _qd_arch, _qd_init_failed
   if _qd_arch is not None:
     return True
@@ -105,20 +110,23 @@ def _ensure_init() -> bool:
   if not is_available():
     _qd_init_failed = True
     return False
-  qd = _modules()["qd"]
+  from mjlab.sim.qd_runtime import current_arch, ensure_initialized
+
   override = os.environ.get("MJLAB_RAYCAST_QD_ARCH")
   candidates = (
     [override] if override else (["metal"] if sys.platform == "darwin" else [])
   ) + ["cuda", "vulkan", "cpu"]
-  for arch in candidates:
-    try:
-      qd.init(arch=getattr(qd, arch))
-      _qd_arch = arch
-      return True
-    except Exception:
-      continue
-  _qd_init_failed = True
-  return False
+  existing = current_arch()
+  if existing is not None and existing not in candidates:
+    # Respect the physics backend's arch; raycast runs on it too.
+    _qd_arch = existing
+    return True
+  try:
+    _qd_arch = ensure_initialized(candidates)
+    return True
+  except Exception:
+    _qd_init_failed = True
+    return False
 
 
 def scene_has_qd_only_types(mj_model: mujoco.MjModel) -> bool:

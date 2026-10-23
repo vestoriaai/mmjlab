@@ -6,28 +6,29 @@ from pathlib import Path
 import mujoco
 import pytest
 import torch
-import warp as wp
 
 from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim.sim import Simulation, SimulationCfg
 
 
-@pytest.fixture(scope="session", autouse=True)
-def configure_test_environment():
-  """Configure test environment settings automatically for all tests."""
-  wp.config.quiet = True
-
-
 def get_test_device() -> str:
-  """Get device for testing, preferring CUDA if available.
+  """Device for qd-backend testing: CPU (qd.cpu) on this host."""
+  return "cpu"
 
-  Can be overridden with FORCE_CPU=1 environment variable to test
-  CPU-only behavior on GPU machines.
+
+def pytest_configure(config):
+  """Initialize quadrants on qd.cpu before any test module is imported.
+
+  quadrants is process-global: a second ``qd.init`` invalidates every existing
+  allocation. Collection-time evaluation of skip markers (e.g. the qd camera
+  perf gates querying the arch) can otherwise initialize it first — and on
+  darwin the raycast backend prefers metal. This suite exercises the qd stack
+  on CPU, so pin the arch at the earliest hook.
   """
-  if os.environ.get("FORCE_CPU") == "1":
-    return "cpu"
-  return "cuda" if torch.cuda.is_available() else "cpu"
+  from mjlab.sim.qd_runtime import ensure_initialized
+
+  ensure_initialized(["cpu"])
 
 
 # 共享机器 perf 门槛守卫：桌面/协作进程负载会以 ±15%~50% 污染微基准，

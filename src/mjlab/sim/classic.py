@@ -16,7 +16,7 @@ every bound field is refreshed after each call. Derived fields are one substep b
 them. Model fields expanded for domain randomization are mjbatch ``expand`` views, applied
 per environment before each call; ``recompute_constants`` is ``set_const``.
 
-Not supported (Warp-only): camera/raycast sensors (``SensorContext``), mesh variants,
+Not supported: mesh variants,
 and the ``wp_model``/``wp_data`` escape hatches used by the differential-IK action.
 The ``sleep`` enable flag is accepted but stripped (C-engine sleep islands are not
 bit-identical to sleep-off trajectories); camera/raycast sensing runs through
@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import mujoco
 import numpy as np
@@ -37,8 +37,6 @@ from mjbatch import Batch
 from mjlab.utils.nan_guard import NanGuard
 
 if TYPE_CHECKING:
-  import mujoco_warp as mjwarp
-
   from mjlab.entity.variants import VariantMetadata
   from mjlab.managers.event_manager import RecomputeLevel
   from mjlab.sensor.sensor_context import SensorContext
@@ -233,7 +231,7 @@ class ClassicSimulation:
   ):
     if variant_info:
       raise NotImplementedError(
-        "Mesh variants are not supported by the classic backend; use backend='warp'."
+        "Mesh variants are not supported by the classic backend."
       )
     if torch.device(device).type != "cpu":
       raise ValueError(f"The classic backend runs on CPU, got device='{device}'.")
@@ -262,7 +260,7 @@ class ClassicSimulation:
       warnings.warn(
         "The classic backend ignores the 'sleep' enable flag: C-engine sleep "
         "islands are not bit-identical to sleep-off trajectories. Sleep "
-        "remains a warp-backend optimization; use backend='warp' for it.",
+        "remains a qd-backend optimization.",
         stacklevel=2,
       )
     cfg.mujoco.apply(compiled)
@@ -336,18 +334,18 @@ class ClassicSimulation:
   @property
   def wp_model(self):
     raise NotImplementedError(
-      "wp_model is Warp-only (used by the differential-IK action); use backend='warp'."
+      "wp_model is qd-backend-only (mujoco_qd native model); use backend='qd'."
     )
 
   @property
   def wp_data(self):
     raise NotImplementedError(
-      "wp_data is Warp-only (used by the differential-IK action); use backend='warp'."
+      "wp_data is qd-backend-only (mujoco_qd native data); use backend='qd'."
     )
 
   @property
   def wp_device(self):
-    raise NotImplementedError("wp_device is Warp-only; use backend='warp'.")
+    raise NotImplementedError("wp_device is qd-backend-only; use backend='qd'.")
 
   # Methods.
 
@@ -385,7 +383,7 @@ class ClassicSimulation:
 
   def step(self) -> None:
     # NanGuard only does torch ops on batched fields; the bridge satisfies it.
-    with self.nan_guard.watch(cast("mjwarp.Data", self.data)):
+    with self.nan_guard.watch(self.data):
       self._batch.step()
 
   def reset(self, env_ids: torch.Tensor | None = None) -> None:
@@ -400,16 +398,13 @@ class ClassicSimulation:
     """Wire a sensor context for camera/raycast sensing.
 
     The classic backend consumes a :class:`mjlab.sensor.sensor_context_cpu.
-    SensorContextCPU` (torch raycasts + ``mujoco.Renderer``), which the scene
-    builds automatically when the simulation bridges are CPU bridges. The
-    Warp ``SensorContext`` is not accepted: its render pipeline is
-    mujoco_warp-only.
+    SensorContextCPU` (torch raycasts + the qd/GL camera backends), which the
+    scene builds automatically.
     """
     if not hasattr(ctx, "sense"):
       raise NotImplementedError(
         "The classic backend requires SensorContextCPU (from "
-        "mjlab.sensor.sensor_context_cpu); the Warp SensorContext renders "
-        "through mujoco_warp. Use backend='warp' for the Warp context."
+        "mjlab.sensor.sensor_context_cpu)."
       )
     self._sensor_context = ctx
 

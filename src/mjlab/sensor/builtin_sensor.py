@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import mujoco
-import mujoco_warp as mjwarp
 import torch
 
 from mjlab.entity import Entity
 from mjlab.sensor.sensor import Sensor, SensorCfg
+
+if TYPE_CHECKING:
+  import mujoco_qd as mjwarp
+
 
 SensorType = Literal[
   # Site sensors.

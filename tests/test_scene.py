@@ -3,7 +3,7 @@
 from unittest.mock import Mock
 
 import mujoco
-import mujoco_warp as mjwarp
+import mujoco_qd as mjwarp
 import pytest
 import torch
 from conftest import get_test_device, load_fixture_xml
@@ -12,7 +12,7 @@ from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import Entity, EntityArticulationInfoCfg, EntityCfg
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim.sim import Simulation, SimulationCfg
-from mjlab.sim.sim_data import WarpBridge
+from mjlab.sim.sim_data import QdBridge
 
 # ============================================================================
 # Fixtures
@@ -110,8 +110,8 @@ def initialized_scene(scene_with_entities_cfg, device):
 
   wp_model = mjwarp.put_model(model)
   wp_data = mjwarp.put_data(model, data, nworld=scene.num_envs)
-  wp_model = WarpBridge(wp_model, nworld=scene.num_envs)
-  wp_data = WarpBridge(wp_data)
+  wp_model = QdBridge(wp_model, nworld=scene.num_envs)
+  wp_data = QdBridge(wp_data)
 
   scene.initialize(model, wp_model, wp_data)  # type: ignore
   return scene, wp_data
@@ -355,8 +355,8 @@ def test_full_scene_lifecycle(robot_entity_cfg, device, tmp_path):
 
   wp_model = mjwarp.put_model(model)
   wp_data = mjwarp.put_data(model, data, nworld=scene.num_envs)
-  wp_model = WarpBridge(wp_model, nworld=scene.num_envs)
-  wp_data = WarpBridge(wp_data)
+  wp_model = QdBridge(wp_model, nworld=scene.num_envs)
+  wp_data = QdBridge(wp_data)
 
   scene.initialize(model, wp_model, wp_data)  # type: ignore
 

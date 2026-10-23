@@ -1,52 +1,69 @@
-from typing import Any
+"""Expand qd model fields to per-world arrays for domain randomization.
 
-import mujoco_warp as mjwarp
-import warp as wp
+The former Warp version tiled with a dedicated wp kernel; field expansion
+runs once at model-build time, so a numpy tile plus ``mujoco_qd``'s
+``from_data`` allocation is semantically identical and simpler.
+"""
 
-# Ref: https://github.com/newton-physics/newton/blob/640095cbe1914d43e9158ec71264a0eb7272fc15/newton/_src/solvers/mujoco/solver_mujoco.py#L2587-L2612
+from __future__ import annotations
 
-
-@wp.kernel(module="unique")
-def repeat_array_kernel(
-  src: wp.array(dtype=Any),  # type: ignore
-  nelems_per_world: int,
-  dst: wp.array(dtype=Any),  # type: ignore
-):
-  tid = wp.tid()
-  src_idx = tid % nelems_per_world  # type: ignore[operator]
-  dst[tid] = src[src_idx]
+import numpy as np
+import quadrants as qd
+from mujoco_qd._src.warp_util import from_data
 
 
-def expand_model_fields(
-  model: mjwarp.Model,
-  nworld: int,
-  fields_to_expand: list[str],
-) -> None:
+def _element_dtype(tail: tuple[int, ...]) -> Any:
+  """The exact compound dtype mujoco_qd kernels annotate for ``tail``.
+
+  VectorNdarray reports a scalar ``.dtype``, so the compound type is recovered
+  from ``mujoco_qd._src.types`` (the same type objects the engine kernels
+  annotate — reusing them keeps the kernel ABI identical; structurally-built
+  types pass the mapper but are not ABI-safe).
+  """
+  import quadrants as qd
+  from mujoco_qd import _src as _mq
+
+  # 2/3/4-extent vectors live in qd.math; the engine's wider compound types
+  # live in mujoco_qd._src.types.
+  modules = (qd.math, _mq.types)
+  if len(tail) == 1:
+    name = f"vec{tail[0]}"
+  else:
+    name = f"mat{tail[0]}{tail[1]}"
+  for mod in modules:
+    cand = getattr(mod, name, None)
+    if cand is not None and type(cand).__name__ in ("VectorType", "MatrixType"):
+      return cand
+  types_mod = _mq.types
+  # Fallback: unique structural match (types like spatial_vector alias the
+  # same extents as vec3, so only accept when unambiguous).
+  matches = []
+  for name in dir(types_mod):
+    cand = getattr(types_mod, name)
+    kind = type(cand).__name__
+    if kind == "VectorType" and len(tail) == 1 and cand.n == tail[0]:
+      matches.append(cand)
+    if kind == "MatrixType" and len(tail) == 2 and (cand.n, cand.m) == tail:
+      matches.append(cand)
+  unique = {id(m): m for m in matches}
+  if len(unique) == 1:
+    return next(iter(unique.values()))
+  raise TypeError(f"No unambiguous mujoco_qd compound dtype for element tail {tail}")
+
+
+def expand_model_fields(model: Any, nworld: int, fields_to_expand: list[str]) -> None:
   if nworld == 1:
     return
 
-  def tile(x: wp.array) -> wp.array | wp.array2d | wp.array3d | wp.array4d:
-    # Create new array with same shape but first dim multiplied by nworld.
-    new_shape = list(x.shape)
-    new_shape[0] = nworld
-    wp_array = {1: wp.array, 2: wp.array2d, 3: wp.array3d, 4: wp.array4d}[
-      len(new_shape)
-    ]
-    dst = wp_array(shape=new_shape, dtype=x.dtype, device=x.device)
-
-    src_flat = x.flatten()
-    dst_flat = dst.flatten()  # type: ignore[possibly-missing-attribute]
-
-    # Launch kernel to repeat data, one thread per destination element.
-    n_elems_per_world = dst_flat.shape[0] // nworld
-    wp.launch(
-      repeat_array_kernel,
-      dim=dst_flat.shape[0],
-      inputs=[src_flat, n_elems_per_world],
-      outputs=[dst_flat],
-      device=x.device,
-    )
-    return dst
+  def tile(x: Any) -> Any:
+    # Element-major numpy layout (vec/mat fields carry trailing extents that
+    # are NOT part of the qd array's shape).
+    src = x.to_numpy()
+    reps = (nworld,) + (1,) * (src.ndim - 1)
+    data = np.tile(src, reps)
+    tail = src.shape[len(x.shape):]
+    dtype = _element_dtype(tail) if tail else x.dtype
+    return from_data(data, dtype=dtype)
 
   for field in model.__dataclass_fields__:
     if field in fields_to_expand:

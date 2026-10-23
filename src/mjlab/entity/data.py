@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-import mujoco_warp as mjwarp
 import torch
 
 from mjlab.utils.lab_api.math import (
@@ -14,6 +13,7 @@ from mjlab.utils.lab_api.math import (
 )
 
 if TYPE_CHECKING:
+  import mujoco_qd as mjwarp
   from mjlab.entity.entity import EntityIndexing
 
 

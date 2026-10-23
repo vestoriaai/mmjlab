@@ -1,53 +1,52 @@
 from __future__ import annotations
 
-import gc
 import warnings
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
 import mujoco
-import mujoco_warp as mjwarp
+import mujoco_qd as mjwarp  # mjwarp-shaped API: the qd port of MuJoCo Warp.
+import numpy as np
 import torch
-import warp as wp
+from mujoco_qd._src.warp_util import from_data
 
-from mjlab.entity.variants import VARIANT_DEPENDENT_FIELDS, build_variant_model
 from mjlab.managers.event_manager import RecomputeLevel
+from mjlab.sim.qd_runtime import ensure_initialized
 from mjlab.sim.randomization import expand_model_fields
-from mjlab.sim.sim_data import TorchArray, WarpBridge
+from mjlab.sim.sim_data import QdBridge, TorchArray
 from mjlab.utils.nan_guard import NanGuard, NanGuardCfg
 
 if TYPE_CHECKING:
   from mjlab.entity.variants import VariantMetadata
-  from mjlab.sensor.sensor_context import SensorContext
+  from mjlab.sensor.sensor_context_cpu import SensorContextCPU
 
 # Type aliases for better IDE support while maintaining runtime compatibility
-# At runtime, WarpBridge wraps the actual MJWarp objects.
+# At runtime, QdBridge wraps the actual mujoco_qd objects.
 if TYPE_CHECKING:
   ModelBridge = mjwarp.Model
   DataBridge = mjwarp.Data
 else:
-  ModelBridge = WarpBridge
-  DataBridge = WarpBridge
+  ModelBridge = QdBridge
+  DataBridge = QdBridge
 
-# Minimum CUDA driver version supported for conditional CUDA graphs.
-_GRAPH_CAPTURE_MIN_DRIVER = (12, 4)
+# qd arch candidates for each torch device string. mjlab talks to the engine
+# through torch-side bridges, so the torch device selects the qd arch.
+_DEVICE_TO_ARCH_CANDIDATES: dict[str, list[str]] = {
+  "cpu": ["cpu"],
+  "mps": ["metal"],
+  "metal": ["metal"],
+}
 
 
-@contextmanager
-def _suspend_gc():
-  """Temporarily disable the garbage collector.
-
-  Prevents GC from finalizing stale Warp Graph objects during wp.ScopedCapture, which
-  would record their destructor calls into the new graph and corrupt it on replay.
-  """
-  enabled = gc.isenabled()
-  gc.disable()
-  try:
-    yield
-  finally:
-    if enabled:
-      gc.enable()
+def _ensure_qd_init(device: str) -> None:
+  """Initialize quadrants once, on the arch implied by ``device``."""
+  candidates = _DEVICE_TO_ARCH_CANDIDATES.get(device)
+  if candidates is None:
+    raise ValueError(
+      f"Device '{device}' is not supported by the qd backend "
+      f"(available: {sorted(_DEVICE_TO_ARCH_CANDIDATES)})."
+    )
+  ensure_initialized(candidates)
 
 
 _JACOBIAN_MAP = {
@@ -70,8 +69,6 @@ for _name in ("discrete",):
   _enum = getattr(mujoco.mjtIntegrator, f"mjINT_{_name.upper()}", None)
   if _enum is not None:
     _INTEGRATOR_MAP[_name] = _enum
-# Integrators implemented by MuJoCo Warp (the classic backend supports all).
-_WARP_INTEGRATORS = ("euler", "implicitfast")
 _SOLVER_MAP = {
   "newton": mujoco.mjtSolver.mjSOL_NEWTON,
   "cg": mujoco.mjtSolver.mjSOL_CG,
@@ -112,9 +109,9 @@ class MujocoCfg:
   integrator: Literal["euler", "implicitfast", "rk4", "implicit", "discrete"] = (
     "implicitfast"
   )
-  """Numerical integrator. MuJoCo Warp implements ``euler`` and ``implicitfast``;
-  the remaining integrators require ``backend="classic"`` (and ``discrete``
-  additionally requires a MuJoCo version that provides it)."""
+  """Numerical integrator. The qd backend implements every integrator MuJoCo
+  exposes (``discrete`` additionally requires a MuJoCo version that provides
+  it)."""
 
   # Friction settings.
   impratio: float = 1.0
@@ -173,15 +170,16 @@ class MujocoCfg:
 
 @dataclass(kw_only=True)
 class SimulationCfg:
-  backend: Literal["warp", "classic"] = "warp"
+  backend: Literal["qd", "warp", "classic"] = "qd"
   """Physics backend.
 
-  ``"warp"`` (default) batches all environments in MuJoCo Warp kernels on the
-  torch device. ``"classic"`` steps per-environment ``mujoco.MjData`` with the
-  classic C engine on CPU threads; it requires ``device="cpu"``, supports every
-  classic integrator/solver, and is typically much faster than Warp on CPU. See
+  ``"qd"`` (default) batches all environments in quadrants kernels (the
+  ``mujoco_qd`` port of MuJoCo Warp) on the device implied by ``device``
+  (``"cpu"`` or ``"mps"``). ``"warp"`` is accepted as an alias of ``"qd"``.
+  ``"classic"`` steps per-environment ``mujoco.MjData`` with the classic C
+  engine on CPU threads; it requires ``device="cpu"``. See
   :class:`mjlab.sim.classic.ClassicSimulation` for its limitations
-  (no camera/raycast sensors, no mesh variants)."""
+  (no mesh variants)."""
   num_threads: int | None = None
   """Classic backend only: threads in mjbatch's pool.
 
@@ -207,11 +205,11 @@ class SimulationCfg:
   runtime if a world needs more than ``njmax`` rows."""
   contact_sensor_maxmatch: int = 64
   broadphase: Literal["nxn", "sap_tile", "sap_segmented"] | None = None
-  """Broadphase collision algorithm. If None, use the MuJoCo Warp default."""
+  """Broadphase collision algorithm. If None, use the engine default."""
   broadphase_filter: tuple[Literal["plane", "sphere", "aabb", "obb"], ...] | None = None
   """Bounding-volume filters applied during broadphase collision checking.
 
-  If None, use the MuJoCo Warp default."""
+  If None, use the engine default."""
   ls_parallel: bool | None = None
   """Deprecated and ignored. Parallel linesearch was removed in MuJoCo Warp 3.10."""
   mujoco: MujocoCfg = field(default_factory=MujocoCfg)
@@ -225,9 +223,12 @@ class SimulationCfg:
         DeprecationWarning,
         stacklevel=2,
       )
+    if self.backend == "warp":
+      # Backwards-compatible alias: "warp" now selects the qd engine.
+      self.backend = "qd"
 
   def apply_wp_opt(self, wp_opt: mjwarp.Option) -> None:
-    """Apply MuJoCo Warp-only settings to a warp Option (post ``put_model``)."""
+    """Apply engine-only settings to the qd model's Option (post ``put_model``)."""
     wp_opt.contact_sensor_maxmatch = self.contact_sensor_maxmatch
     if self.broadphase is not None:
       wp_opt.broadphase = _BROADPHASE_MAP[self.broadphase]
@@ -238,25 +239,12 @@ class SimulationCfg:
 
 
 class Simulation:
-  """GPU-accelerated MuJoCo simulation powered by MJWarp.
+  """Batched MuJoCo simulation powered by mujoco_qd (quadrants kernels).
 
-  CUDA Graph Capture
-  ------------------
-  On CUDA devices with memory pools enabled, the simulation captures CUDA graphs
-  for ``step()``, ``forward()``, and ``reset()`` operations. Graph capture records
-  a sequence of GPU kernels and their memory addresses, then replays the entire
-  sequence with a single kernel launch, eliminating CPU overhead from repeated
-  kernel dispatches.
-
-  **Important:** A captured graph holds pointers to the GPU arrays that existed
-  at capture time. If those arrays are later replaced (e.g., via
-  ``expand_model_fields()``), the graph will still read from the old arrays,
-  silently ignoring any new values. The ``expand_model_fields()`` method handles
-  this automatically by calling ``create_graph()`` after replacing arrays.
-
-  If you write code that replaces model or data arrays after simulation
-  initialization, you **must** call ``create_graph()`` afterward to re-capture
-  the graphs with the new memory addresses.
+  qd has a single implicit device per process (selected by ``device``:
+  ``"cpu"`` -> ``qd.cpu``, ``"mps"``/``"metal"`` -> ``qd.metal``), so there
+  are no explicit device scopes. qd does not support graph capture; ``step``/
+  ``forward``/``reset`` launch their kernels directly.
   """
 
   def __init__(
@@ -264,37 +252,33 @@ class Simulation:
     num_envs: int,
     cfg: SimulationCfg,
     model: mujoco.MjModel | None = None,
-    device: str = "cuda:0",
+    device: str = "cpu",
     *,
     spec: mujoco.MjSpec | None = None,
-    variant_info: list[tuple[str, VariantMetadata]] | None = None,
+    variant_info: list[tuple[str, "VariantMetadata"]] | None = None,
   ):
-    if cfg.mujoco.integrator not in _WARP_INTEGRATORS:
-      raise ValueError(
-        f"Integrator '{cfg.mujoco.integrator}' is not implemented by MuJoCo "
-        f"Warp (available: {_WARP_INTEGRATORS}). Use sim.backend='classic'."
+    if variant_info:
+      raise NotImplementedError(
+        "The qd backend does not support mesh variants (per-world mesh "
+        "assignment); variant realization is unsupported on every mmjlab "
+        "backend."
       )
+    _ensure_qd_init(device)
     self.cfg = cfg
     self.device = device
-    self.wp_device = wp.get_device(self.device)
     self.num_envs = num_envs
     self._default_model_fields: dict[str, torch.Tensor] = {}
     # Fields whose DR baseline is per-world (DR's `_select_default_values`
     # uses this to know whether to index `[env, ...]` vs `[...]`).
-    # Variant-dependent fields go here; `geom_dataid` does not, because
-    # DR does not randomize mesh selection.
     self._per_world_default_fields: set[str] = set()
-    # Fields that have per-world warp arrays (viewer sync uses this to
-    # know what to copy per env). Superset of `_per_world_default_fields`
-    # plus `geom_dataid` for variant scenes.
+    # Fields that have per-world arrays (viewer sync uses this to know what to
+    # copy per env).
     self._expanded_fields: set[str] = set()
     # Per-entity variant assignment, keyed by entity name (no trailing
     # slash). Empty for non-variant scenes.
     self._world_to_variant: dict[str, torch.Tensor] = {}
 
-    if spec is not None and variant_info:
-      self._init_with_variants(spec, variant_info)
-    elif spec is not None:
+    if spec is not None:
       compiled = spec.compile()
       cfg.mujoco.apply(compiled)
       self._init_with_model(compiled)
@@ -305,71 +289,17 @@ class Simulation:
       raise ValueError("Either model or spec must be provided.")
 
   def _init_with_model(self, model: mujoco.MjModel) -> None:
-    """Standard path: build warp model from compiled MjModel."""
+    """Standard path: build qd model from compiled MjModel."""
     self._mj_model = model
     self._mj_data = mujoco.MjData(model)
     mujoco.mj_forward(self._mj_model, self._mj_data)
 
-    with wp.ScopedDevice(self.wp_device):
-      self._wp_model = mjwarp.put_model(self._mj_model)
-      self.cfg.apply_wp_opt(self._wp_model.opt)
-      self._finish_init()
-
-  def _init_with_variants(
-    self,
-    spec: mujoco.MjSpec,
-    variant_info: list[tuple[str, VariantMetadata]],
-  ) -> None:
-    """Per-world mesh path: build model with per-world geom_dataid.
-
-    ``self._mj_model`` remains a single host-side template model. The actual
-    simulation model may store variant-dependent fields as per-world arrays in
-    ``self._wp_model`` / ``self.model``. CPU consumers that call MuJoCo APIs on
-    ``self._mj_model`` must first sync the relevant per-world fields for the env
-    they are rendering or inspecting.
-    """
-    with wp.ScopedDevice(self.wp_device):
-      result = build_variant_model(
-        spec,
-        self.num_envs,
-        variant_info,
-        configure_model=self.cfg.mujoco.apply,
-      )
-      self._mj_model = result.mj_model
-      self._mj_data = mujoco.MjData(self._mj_model)
-      mujoco.mj_forward(self._mj_model, self._mj_data)
-
-      self._wp_model = result.wp_model
-      self.cfg.apply_wp_opt(self._wp_model.opt)
-
-      # Snapshot variant-dependent fields as per-world defaults so
-      # DR scale/add operations use each variant's base values.
-      for field_name in VARIANT_DEPENDENT_FIELDS:
-        arr = getattr(self._wp_model, field_name)
-        self._default_model_fields[field_name] = torch.as_tensor(
-          arr.numpy(), device=self.device
-        ).clone()
-      self._per_world_default_fields.update(VARIANT_DEPENDENT_FIELDS)
-
-      self._finish_init()
-
-    # Register variant-dependent fields as expanded so the native
-    # viewer syncs them per-world.
-    self._expanded_fields.update(VARIANT_DEPENDENT_FIELDS)
-    self._expanded_fields.add("geom_dataid")
-    self._expanded_fields.add("geom_matid")
-
-    # Stash variant assignments as torch tensors keyed by bare entity name
-    # (build_variant_model emits "<name>/" prefixes; strip the trailing slash for
-    # the public API).
-    for prefix, arr in result.world_to_variant.items():
-      key = prefix.rstrip("/")
-      self._world_to_variant[key] = torch.as_tensor(
-        arr, dtype=torch.long, device=self.device
-      )
+    self._wp_model = mjwarp.put_model(self._mj_model)
+    self.cfg.apply_wp_opt(self._wp_model.opt)
+    self._finish_init()
 
   def _finish_init(self) -> None:
-    """Common initialization after warp model is created."""
+    """Common initialization after the qd model is created."""
     self._wp_data = mjwarp.put_data(
       self._mj_model,
       self._mj_data,
@@ -378,51 +308,25 @@ class Simulation:
       njmax=self.cfg.njmax,
     )
 
-    self._reset_mask_wp = wp.zeros(self.num_envs, dtype=bool)
-    self._reset_mask = TorchArray(self._reset_mask_wp)
+    self._reset_mask_qd = from_data(
+      np.zeros(self.num_envs, dtype=bool), dtype=bool
+    )
+    self._reset_mask = TorchArray(self._reset_mask_qd)
 
-    self._model_bridge = WarpBridge(self._wp_model, nworld=self.num_envs)
-    self._data_bridge = WarpBridge(self._wp_data)
-    self._sensor_context: SensorContext | None = None
+    self._model_bridge = QdBridge(self._wp_model, nworld=self.num_envs)
+    self._data_bridge = QdBridge(self._wp_data)
+    self._sensor_context: SensorContextCPU | None = None
 
-    self.use_cuda_graph = self._should_use_cuda_graph()
-    self.create_graph()
+    self.use_cuda_graph = False
 
     self.nan_guard = NanGuard(self.cfg.nan_guard, self.num_envs, self._mj_model)
 
   def create_graph(self) -> None:
-    """Capture CUDA graphs for step, forward, and reset operations.
+    """No-op: qd does not support graph capture.
 
-    This method must be called whenever GPU arrays in the model or data are
-    replaced after initialization. The captured graphs hold pointers to the
-    arrays that existed at capture time. If those arrays are replaced, the
-    graphs will silently read from the old arrays, ignoring any new values.
-
-    Called automatically by:
-    - ``__init__()`` during simulation initialization
-    - ``expand_model_fields()`` after replacing model arrays
-
-    On CPU devices or when memory pools are disabled, this is a no-op.
+    Retained for interface parity with the classic backend; call sites
+    (``expand_model_fields``) keep working unchanged.
     """
-    self.step_graph = None
-    self.forward_graph = None
-    self.reset_graph = None
-    self.sense_graph = None
-    if self.use_cuda_graph:
-      with _suspend_gc(), wp.ScopedDevice(self.wp_device):
-        with wp.ScopedCapture() as capture:
-          mjwarp.step(self.wp_model, self.wp_data)
-        self.step_graph = capture.graph
-        with wp.ScopedCapture() as capture:
-          mjwarp.forward(self.wp_model, self.wp_data)
-        self.forward_graph = capture.graph
-        with wp.ScopedCapture() as capture:
-          mjwarp.reset_data(self.wp_model, self.wp_data, reset=self._reset_mask_wp)
-        self.reset_graph = capture.graph
-        if self._sensor_context is not None:
-          with wp.ScopedCapture() as capture:
-            self._sense_kernel()
-          self.sense_graph = capture.graph
 
   # Properties.
 
@@ -436,18 +340,20 @@ class Simulation:
 
   @property
   def wp_model(self) -> mjwarp.Model:
+    """Engine-native model (``mujoco_qd``; named ``wp_model`` for parity)."""
     return self._wp_model
 
   @property
   def wp_data(self) -> mjwarp.Data:
+    """Engine-native data (``mujoco_qd``; named ``wp_data`` for parity)."""
     return self._wp_data
 
   @property
-  def data(self) -> "DataBridge":
+  def data(self) -> DataBridge:
     return cast("DataBridge", self._data_bridge)
 
   @property
-  def model(self) -> "ModelBridge":
+  def model(self) -> ModelBridge:
     return cast("ModelBridge", self._model_bridge)
 
   @property
@@ -462,17 +368,12 @@ class Simulation:
 
   @property
   def per_world_default_fields(self) -> set[str]:
-    """Fields with per-world defaults from mesh variant compilation."""
+    """Fields with per-world defaults from variant compilation."""
     return self._per_world_default_fields
 
   @property
   def world_to_variant(self) -> dict[str, torch.Tensor]:
-    """Per-entity variant assignment for variant scenes.
-
-    Maps entity name (without trailing slash) to a ``(num_envs,)`` tensor of
-    variant indices. The index order matches the order of variants declared
-    in the entity's :class:`VariantEntityCfg`. Empty for non-variant scenes.
-    """
+    """Per-entity variant assignment for variant scenes (empty: unsupported)."""
     return self._world_to_variant
 
   # Methods.
@@ -490,19 +391,12 @@ class Simulation:
     self._expanded_fields.update(fields)
     self._model_bridge.clear_cache()
 
-    if self._sensor_context is not None:
-      self._sensor_context.recreate(self._mj_model, self._expanded_fields)
-
-    # Field expansion allocates new arrays and replaces them via setattr. The
-    # CUDA graph captured the old memory addresses, so we must recreate it.
-    self.create_graph()
-
   def get_default_field(self, field: str) -> torch.Tensor:
     """Get the default value for a model field, caching for reuse.
 
     Returns the original values from the C MuJoCo model (mj_model), obtained
     from the final compiled scene spec before any randomization is applied.
-    Not to be confused with the GPU Warp model (wp_model) which may have
+    Not to be confused with the qd model (wp_model) which may have
     randomized values.
     """
     if field not in self._default_model_fields:
@@ -525,120 +419,62 @@ class Simulation:
         is the cheapest (covers body_gravcomp changes).
     """
     fn = getattr(mjwarp, level.name)
-    with wp.ScopedDevice(self.wp_device):
-      fn(self._wp_model, self._wp_data)
+    fn(self._wp_model, self._wp_data)
 
   def forward(self) -> None:
-    with wp.ScopedDevice(self.wp_device):
-      if self.use_cuda_graph and self.forward_graph is not None:
-        wp.capture_launch(self.forward_graph)
-      else:
-        mjwarp.forward(self.wp_model, self.wp_data)
+    mjwarp.forward(self.wp_model, self.wp_data)
 
   def step(self) -> None:
-    with wp.ScopedDevice(self.wp_device):
-      with self.nan_guard.watch(self.data):
-        if self.use_cuda_graph and self.step_graph is not None:
-          wp.capture_launch(self.step_graph)
-        else:
-          mjwarp.step(self.wp_model, self.wp_data)
+    with self.nan_guard.watch(self.data):
+      mjwarp.step(self.wp_model, self.wp_data)
 
   def reset(self, env_ids: torch.Tensor | None = None) -> None:
-    with wp.ScopedDevice(self.wp_device):
-      if env_ids is None:
-        self._reset_mask.fill_(True)
-      else:
-        self._reset_mask.fill_(False)
-        self._reset_mask[env_ids] = True
+    if env_ids is None:
+      self._reset_mask.fill_(True)
+    else:
+      self._reset_mask.fill_(False)
+      self._reset_mask[env_ids] = True
 
-      if self.use_cuda_graph and self.reset_graph is not None:
-        wp.capture_launch(self.reset_graph)
-      else:
-        mjwarp.reset_data(self.wp_model, self.wp_data, reset=self._reset_mask_wp)
+    mjwarp.reset_data(self.wp_model, self.wp_data, reset=self._reset_mask_qd)
 
-  def set_sensor_context(self, ctx: SensorContext) -> None:
-    """Wire a SensorContext for camera/raycast sensing.
+  def set_sensor_context(self, ctx: SensorContextCPU) -> None:
+    """Wire a sensor context for camera/raycast sensing.
 
-    Automatically re-captures CUDA graphs so the sense_graph includes
-    the new sensor kernels.
+    The qd backend consumes :class:`mjlab.sensor.sensor_context_cpu.
+    SensorContextCPU` (torch raycasts + the qd/GL camera backends), which
+    the scene builds for every backend; sensing runs on torch tensors
+    against the bridged state.
     """
+    if not hasattr(ctx, "sense"):
+      raise NotImplementedError(
+        "The qd backend requires SensorContextCPU (from "
+        "mjlab.sensor.sensor_context_cpu)."
+      )
     self._sensor_context = ctx
-    self.create_graph()
 
   def sense(self) -> None:
-    """Execute the sense pipeline: prepare -> graph -> finalize.
+    """Run raycast computation and camera rendering for this step."""
+    if self._sensor_context is not None:
+      self._sensor_context.sense()
 
-    Runs BVH refit, camera rendering, and raycasting in a single
-    CUDA graph launch. Should be called once per env step, right
-    before observation computation.
-    """
-    if self._sensor_context is None:
-      return
-
-    ctx = self._sensor_context
-    ctx.prepare()
-
-    with wp.ScopedDevice(self.wp_device):
-      if self.use_cuda_graph and self.sense_graph is not None:
-        wp.capture_launch(self.sense_graph)
-      else:
-        self._sense_kernel()
-
-    ctx.finalize()
-
-  # Private methods.
-
-  def _sense_kernel(self) -> None:
-    """GPU kernel sequence for sensing (captured in sense_graph)."""
-    assert self._sensor_context is not None
-    ctx = self._sensor_context
-    rc = ctx.render_context
-
-    mjwarp.refit_bvh(self.wp_model, self.wp_data, rc)
-
-    if ctx.has_cameras:
-      mjwarp.render(self.wp_model, self.wp_data, rc)
-      ctx.unpack_rgb()
-
-    for sensor in ctx.raycast_sensors:
-      sensor.raycast_kernel(rc=rc)
-
-  def _should_use_cuda_graph(self) -> bool:
-    """Determine if CUDA graphs can be used based on device and driver version."""
-    if not self.wp_device.is_cuda:
-      return False
-
-    driver_ver = wp.get_cuda_driver_version()
-    has_mempool = wp.is_mempool_enabled(self.wp_device)
-
-    if driver_ver is None:
-      print("[WARNING] CUDA Graphs disabled: driver version unavailable")
-      return False
-
-    if has_mempool and driver_ver >= _GRAPH_CAPTURE_MIN_DRIVER:
-      return True
-
-    reasons = []
-    if not has_mempool:
-      reasons.append("mempool disabled")
-    if driver_ver < _GRAPH_CAPTURE_MIN_DRIVER:
-      reasons.append(f"driver {driver_ver[0]}.{driver_ver[1]} < 12.4")
-    print(f"[WARNING] CUDA Graphs disabled: {', '.join(reasons)}")
-    return False
+  def close(self) -> None:
+    """Release background resources (e.g. the async camera render thread)."""
+    if self._sensor_context is not None and hasattr(self._sensor_context, "close"):
+      self._sensor_context.close()
 
 
 def make_simulation(
   num_envs: int,
   cfg: SimulationCfg,
   model: mujoco.MjModel | None = None,
-  device: str = "cuda:0",
+  device: str = "cpu",
   *,
   spec: mujoco.MjSpec | None = None,
   variant_info: list[tuple[str, "VariantMetadata"]] | None = None,
-) -> "Simulation":
+) -> Simulation:
   """Construct the simulation backend selected by ``cfg.backend``.
 
-  Returns a :class:`Simulation` (Warp) or a
+  Returns a :class:`Simulation` (qd) or a
   :class:`mjlab.sim.classic.ClassicSimulation`; the two expose the same
   interface, so the return value is typed as ``Simulation``.
   """

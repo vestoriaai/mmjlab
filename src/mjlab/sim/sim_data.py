@@ -1,60 +1,81 @@
-"""Bridge for seamless PyTorch-Warp interoperability with zero-copy memory sharing.
+"""Bridge for zero-copy PyTorch views over quadrants (qd) arrays.
 
-Provides automatic wrapping of Warp arrays as PyTorch-compatible objects while
-preserving shared memory and CUDA graph compatibility.
+The qd backend's counterpart of the former Warp bridge: simulation arrays are
+exposed as torch tensors sharing memory through DLPack (write-through verified
+on qd.cpu and qd.metal; quadrants 1.3.4 R4), so the entity/manager/sensor
+stack reads and writes state without copies.
+
+Note on device ordering: on CPU devices the qd kernels and torch consumers
+see the same memory synchronously. On GPU devices (qd.metal) writes from one
+framework become visible to the other only after a device sync
+(``torch.mps.synchronize()``); callers stepping the sim already synchronize
+at the framework boundary.
 """
 
-from typing import Any, Dict, Generic, Optional, Tuple, TypeVar
+from typing import Any, Generic, Tuple, TypeVar
 
 import torch
-import warp as wp
 
 T = TypeVar("T")
 
+_QD_TO_TORCH = {
+  "f16": torch.float16,
+  "f32": torch.float32,
+  "f64": torch.float64,
+  "i8": torch.int8,
+  "i16": torch.int16,
+  "i32": torch.int32,
+  "i64": torch.int64,
+  "u8": torch.uint8,
+  "u32": torch.uint32,
+  "u64": torch.uint64,
+}
+
+
+def _qd_dtype_to_torch(dtype: Any) -> torch.dtype:
+  name = str(dtype)
+  try:
+    return _QD_TO_TORCH[name]
+  except KeyError:
+    raise TypeError(f"Unsupported qd dtype for the torch bridge: {dtype}") from None
+
+
+def _is_qd_array(val: Any) -> bool:
+  """Duck-type check: qd ndarrays expose shape/dtype/to_dlpack."""
+  return (
+    not isinstance(val, torch.Tensor)
+    and hasattr(val, "to_dlpack")
+    and hasattr(val, "shape")
+    and hasattr(val, "dtype")
+  )
+
 
 class TorchArray:
-  """Warp array that behaves like a torch.Tensor with shared memory."""
+  """qd array that behaves like a torch.Tensor with shared memory."""
 
-  def __init__(self, wp_array: wp.array, nworld: int | None = None) -> None:
-    """Initialize the tensor proxy with a Warp array."""
-    self._wp_array = wp_array
-    # Workaround for Warp bug: wp.to_torch fails on empty CPU arrays.
-    if wp_array.device.is_cpu and wp_array.size == 0:  # type: ignore[union-attr]
-      self._tensor = torch.zeros(
-        wp_array.shape, dtype=wp.dtype_to_torch(wp_array.dtype)
-      )
+  def __init__(self, qd_array: Any, nworld: int | None = None) -> None:
+    """Initialize the tensor proxy with a qd ndarray."""
+    self._qd_array = qd_array
+    shape = tuple(int(s) for s in qd_array.shape)
+    if 0 in shape:
+      # DLPack is undefined for zero-length extents; nothing to share anyway.
+      self._tensor = torch.zeros(shape, dtype=_qd_dtype_to_torch(qd_array.dtype))
     else:
-      self._tensor = wp.to_torch(wp_array)
+      self._tensor = torch.from_dlpack(qd_array.to_dlpack())
 
     if (
       nworld is not None
       and nworld > 1
       and len(self._tensor.shape) > 0
       and self._tensor.shape[0] == 1
-      and (self._tensor.stride(0) == 0 or getattr(wp_array, "_is_batched", False))
+      and (self._tensor.stride(0) == 0 or getattr(qd_array, "_is_batched", False))
     ):
-      new_shape = (nworld,) + self._tensor.shape[1:]
+      new_shape = (nworld,) + tuple(self._tensor.shape[1:])
       self._tensor = self._tensor.expand(new_shape)
 
-    self._is_cuda = not self._wp_array.device.is_cpu  # type: ignore
-    self._torch_stream = self._setup_stream()
-
-  def _setup_stream(self) -> Optional[torch.cuda.Stream]:
-    """Setup appropriate stream for the device."""
-    if not self._is_cuda:
-      return None
-
-    try:
-      warp_stream = wp.get_stream(self._wp_array.device)
-      return torch.cuda.ExternalStream(warp_stream.cuda_stream)
-    except Exception as e:
-      # Fallback to default stream if external stream creation fails.
-      print(f"Warning: Could not create external stream: {e}")
-      return torch.cuda.current_stream(self._tensor.device)
-
   @property
-  def wp_array(self) -> wp.array:
-    return self._wp_array
+  def qd_array(self) -> Any:
+    return self._qd_array
 
   def __repr__(self) -> str:
     """Return string representation of the underlying tensor."""
@@ -66,11 +87,7 @@ class TorchArray:
 
   def __setitem__(self, idx: Any, value: Any) -> None:
     """Set item(s) in the tensor using standard indexing."""
-    if self._is_cuda and self._torch_stream is not None:
-      with torch.cuda.stream(self._torch_stream):
-        self._tensor[idx] = value
-    else:
-      self._tensor[idx] = value
+    self._tensor[idx] = value
 
   def __getattr__(self, name: str) -> Any:
     """Delegate attribute access to the underlying tensor."""
@@ -82,7 +99,7 @@ class TorchArray:
     func: Any,
     types: Tuple[type, ...],
     args: Tuple[Any, ...] = (),
-    kwargs: Optional[Dict[str, Any]] = None,
+    kwargs: Any = None,
   ) -> Any:
     """Intercept torch.* function calls to unwrap TorchArray objects."""
     if kwargs is None:
@@ -164,33 +181,17 @@ class TorchArray:
     return self._tensor >= other
 
 
-def _contains_warp_arrays(obj: Any) -> bool:
-  """Check if an object or its attributes contain any Warp arrays."""
-  if isinstance(obj, wp.array):
-    return True
+class QdBridge(Generic[T]):
+  """Wraps mujoco_qd objects to expose qd arrays as PyTorch tensors.
 
-  # Check if it's a struct-like object with attributes
-  if hasattr(obj, "__dict__"):
-    return any(
-      isinstance(getattr(obj, attr), wp.array)
-      for attr in dir(obj)
-      if not attr.startswith("_")
-    )
-
-  return False
-
-
-class WarpBridge(Generic[T]):
-  """Wraps mjwarp objects to expose Warp arrays as PyTorch tensors.
-
-  Automatically converts Warp array attributes to TorchArray objects
+  Automatically converts qd array attributes to TorchArray objects
   on access, enabling direct PyTorch operations on simulation data.
-  Recursively wraps nested structures that contain Warp arrays.
+  Recursively wraps nested structures that contain qd arrays.
 
   IMPORTANT: This wrapper is read-only. To modify array data, use
   in-place operations like `obj.field[:] = value`. Direct assignment
   like `obj.field = new_array` will raise an AttributeError to prevent
-  accidental memory address changes that break CUDA graphs.
+  accidental aliasing breakage (e.g. cached default views).
   """
 
   def __init__(self, struct: T, nworld: int | None = None) -> None:
@@ -199,38 +200,38 @@ class WarpBridge(Generic[T]):
     object.__setattr__(self, "_nworld", nworld)
 
   def __getattr__(self, name: str) -> Any:
-    """Get attribute from the wrapped data, wrapping Warp arrays as TorchArray."""
+    """Get attribute from the wrapped data, wrapping qd arrays as TorchArray."""
     # Check cache first to avoid recreating wrappers.
     if name in self._wrapped_cache:
       return self._wrapped_cache[name]
 
     val = getattr(self._struct, name)
 
-    # Wrap Warp arrays.
-    if isinstance(val, wp.array):
+    # Wrap qd arrays.
+    if _is_qd_array(val):
       wrapped = TorchArray(val, nworld=self._nworld)
       self._wrapped_cache[name] = wrapped
       return wrapped
 
-    # Recursively wrap nested structures that contain Warp arrays.
-    if _contains_warp_arrays(val):
-      wrapped = WarpBridge(val, nworld=self._nworld)
+    # Recursively wrap nested structures that contain qd arrays.
+    if _contains_qd_arrays(val):
+      wrapped = QdBridge(val, nworld=self._nworld)
       self._wrapped_cache[name] = wrapped
       return wrapped
 
     return val
 
   def __setattr__(self, name: str, value: Any) -> None:
-    """Prevent attribute setting to maintain CUDA graph safety."""
+    """Prevent attribute setting to preserve aliasing."""
     raise AttributeError(
-      f"Cannot set attribute '{name}' on WarpBridge. "
-      f"This wrapper is read-only to preserve memory addresses for CUDA graphs. "
+      f"Cannot set attribute '{name}' on QdBridge. "
+      f"This wrapper is read-only to preserve memory sharing. "
       f"Use in-place operations instead: obj.{name}[:] = value"
     )
 
   def __repr__(self) -> str:
     """Return string representation of the wrapped struct."""
-    return f"WarpBridge({repr(self._struct)})"
+    return f"QdBridge({repr(self._struct)})"
 
   @property
   def struct(self) -> T:
@@ -240,7 +241,27 @@ class WarpBridge(Generic[T]):
   def clear_cache(self) -> None:
     """Clear the wrapped cache to force re-wrapping of arrays.
 
-    This should be called after operations that modify the underlying warp arrays,
+    This should be called after operations that modify the underlying qd arrays,
     such as expand_model_fields(), to ensure the cache reflects the updated arrays.
     """
     object.__setattr__(self, "_wrapped_cache", {})
+
+
+def _contains_qd_arrays(obj: Any) -> bool:
+  """Check if an object or its attributes contain any qd arrays."""
+  if _is_qd_array(obj):
+    return True
+
+  # Check if it's a struct-like object with attributes
+  if hasattr(obj, "__dict__"):
+    return any(
+      _is_qd_array(getattr(obj, attr))
+      for attr in dir(obj)
+      if not attr.startswith("_")
+    )
+
+  return False
+
+
+# Backwards-compatible alias for the former Warp bridge name.
+WarpBridge = QdBridge
