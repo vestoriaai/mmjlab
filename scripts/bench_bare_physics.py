@@ -1,29 +1,48 @@
-"""Bare-physics throughput sanity: qd vs classic vs upstream warp on CPU.
+"""Bare-physics profile: classic(mjbatch) / qd.cpu / qd.metal / upstream warp.
 
 Usage (inside the venv that has the mjlab flavour under test):
-  python scripts/bench_bare_physics.py --backend qd     --num-envs 256 [--xml PATH]
-  python scripts/bench_bare_physics.py --backend classic --num-envs 256
-  python scripts/bench_bare_physics.py --backend warp    --num-envs 256  # upstream mjlab venv
+  python scripts/bench_bare_physics.py --backend classic --num-envs 4096
+  python scripts/bench_bare_physics.py --backend qd --device cpu  --num-envs 4096
+  python scripts/bench_bare_physics.py --backend qd --device mps  --num-envs 4096
+  python scripts/bench_bare_physics.py --backend warp --num-envs 256  # upstream mjlab venv
 
-Protocol: fixed XML, zero ctrl, min-of-R repeats, warmup excluded. This is the
-engine-only signal (no observations/rewards/sensors); the training-throughput
-matrix is a separate, later measurement.
+Protocol: fixed XML, zero ctrl, min-of-R repeats, warmup excluded. Memory is
+reported as macOS ``ru_maxrss`` (process lifetime peak, bytes on macOS;
+includes Metal/unified-memory device buffers) — absolute peak plus the peak
+delta around simulation construction+run.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import resource
+import subprocess
 import time
 
 import mujoco
-import torch
 
 _DEFAULT_XML = "/Users/mini0/Code/simtest/mujoco_warp/benchmarks/humanoid/humanoid.xml"
+
+
+def _peak_rss_mb() -> float:
+  """Lifetime peak RSS of this process (macOS ru_maxrss is in bytes)."""
+  return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+
+
+def _current_rss_mb() -> float:
+  """Current resident set via ps (KB on macOS)."""
+  out = subprocess.run(
+    ["ps", "-o", "rss=", "-p", str(os.getpid())],
+    capture_output=True, text=True,
+  ).stdout.strip()
+  return float(out) / 1024.0
 
 
 def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--backend", choices=["qd", "classic", "warp"], default="qd")
+  parser.add_argument("--device", default="cpu", help="cpu | mps (qd.metal)")
   parser.add_argument("--num-envs", type=int, default=256)
   parser.add_argument("--steps", type=int, default=500)
   parser.add_argument("--repeats", type=int, default=5)
@@ -41,17 +60,20 @@ def main() -> None:
       num_envs=args.num_envs,
       cfg=SimulationCfg(backend=backend),
       model=model,
-      device="cpu",
+      device=args.device,
     )
   except ImportError:
     # Upstream mjlab (warp-only): construct the Simulation directly.
     sim = Simulation(num_envs=args.num_envs, cfg=SimulationCfg(), model=model,
-                     device="cpu")
+                     device=args.device)
   sim.reset()
 
   # Warmup (kernel compilation / allocator warmup excluded from timing).
   for _ in range(20):
     sim.step()
+
+  rss_at_run = _current_rss_mb()
+  peak_before_run = _peak_rss_mb()
 
   best = float("inf")
   for _ in range(args.repeats):
@@ -61,10 +83,13 @@ def main() -> None:
     best = min(best, time.perf_counter() - t0)
 
   sps = args.num_envs * args.steps / best
+  peak_after_run = _peak_rss_mb()
   print(
-    f"backend={args.backend} envs={args.num_envs} xml={args.xml.rsplit('/', 1)[-1]}: "
-    f"{sps:,.0f} steps/s (min of {args.repeats} x {args.steps} steps, "
-    f"{best * 1000:.1f} ms/wall-step)"
+    f"backend={args.backend} device={args.device} envs={args.num_envs} "
+    f"xml={args.xml.rsplit('/', 1)[-1]}: {sps:,.0f} steps/s "
+    f"(min of {args.repeats} x {args.steps} steps, {best * 1000:.1f} ms/wall-step) | "
+    f"rss@run {rss_at_run:.0f} MB | peak {peak_after_run:.0f} MB "
+    f"(peak-delta {peak_after_run - peak_before_run:.0f} MB)"
   )
 
 

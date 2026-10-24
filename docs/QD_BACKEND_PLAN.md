@@ -415,3 +415,35 @@ humanoid.xml,裸物理 step(无观测/奖励/传感器),min-of-N,固定协议:
 3.6×(qd 批量摊销更好);② classic 在 CPU 上仍一个量级领先——CPU 侧的价值
 口径与论文一致,mmjlab 的速度主张要靠 qd.metal 臂(下一阶段);③ 上游基线
 环境(mjlab-upstream worktree @ fork 点 + warp 栈)已就位,可复现。
+
+### 12.5 三臂 profile:速度 + 内存(2026-10-24,mujoqo@5df53b9 + quadrants dev150)
+
+环境升级:mujoqo 主链 wp 依赖清零(§4.5 上游项落地)、A59 修复;quadrants
+dev150。升级后回归 45 passed(classic/parity/events/mjbatch smoke)。
+`scripts/bench_bare_physics.py` 增 --device(mps→qd.metal)与内存剖面
+(macOS ru_maxrss 峰值口径,含统一内存设备缓冲)。
+
+| 臂 | 256 envs | 4096 envs | peak RSS @256 | peak RSS @4096 |
+|---|---|---|---|---|
+| 原版组合 classic(mjbatch,fork@3.11) | 276,536 * | 365,362 * | 未测 * | 未测 * |
+| qd.cpu(mujoqo) | 13,464 | 17,353 / 复测 18,265 | 818 MB | 954–1016 MB |
+| qd.metal(mujoqo) | 7,797 | **37,476** | 963 MB | 1013 MB |
+
+\* classic 臂引用 2026-10-23 空窗数据(本轮外部负载未重跑,用户裁定);
+内存未测(mjbatch 内存按线程数而非 env 数定标,预期远小于 qd 臂,待补)。
+
+测量窗口披露:本轮 load 6.7–7.4,另有 5 个外部单核进程(a53b 探针/别的
+session),速度绝对值被压低;**同窗口内的横向对比有效**,跨窗口绝对值
+不可直比。
+
+要点:
+1. **metal@4096 同窗反超 qd.cpu 2.2×**;256 时 metal 慢(launch 开销主导),
+   交叉点在 256–4096 之间。metal 256→4096 缩放 4.8×,cpu 仅 1.3×——GPU
+   批量摊销兑现,这正是 mmjlab 速度主张的落点。
+2. **内存双臂同量级**:4096 humanoid 约 1.0 GB(峰值口径),metal 设备缓冲
+   在统一内存下未放大占用;16GB 机器 4096 envs 安全。
+3. **待归因异常**:qd.cpu@4096 本轮 ~18k vs 前日空窗 74.4k(同协议),
+   差距超出 5 核负载可解释范围——空窗复测后三选一归因(负载/热节流/
+   dev150 回归);metal 为本轮同窗自洽数据,不受影响。
+4. classic 引用数据与本轮 qd 数据测量窗口不对称,正式对比须同窗重测
+   (等空窗,含 classic 内存补测)。
