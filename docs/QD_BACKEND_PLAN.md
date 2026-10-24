@@ -473,3 +473,32 @@ session),速度绝对值被压低;**同窗口内的横向对比有效**,跨窗�
    launch/步),属上游 metal-issues 线的已知优化对象,非 mmjlab 集成问题。
 4. qd.cpu@4096 同窗复现 17–18k(vs 前日空窗 74k),归因仍开放(负载/热/
    回归),空窗复测定案。
+
+### 12.7 qd.cpu 并行模型剖析与 QD_AUTO_SERIAL 杠杆(2026-10-24 深夜)
+
+用户问题:qd.cpu 能否变成 mjbatch 式线程模式?底层差异?
+
+实测链条(dev152 验证):
+1. **qd.cpu 默认单核**:4096 envs 步进时 %CPU=100.0,170 ms/步。
+2. **根因 = quadrants A59(C1.5 串行内联阈值,4ac79965)**:range-for 任务数
+   < 阈值(默认 64)的 kernel 不唤醒线程池、串行内联执行(治小 kernel
+   11-18µs 整池唤醒税,S1-S6 eager 2.5-3× 提速)。mujoco_qd 批量 kernel 的
+   任务粒度按元素维(如 humanoid nbody≈18)<64 → 整步全部落串行区。
+   dev142 时代阈值 bug 读 0(恒并行)= 55 ms/步的"意外并行"来源。
+3. **QD_AUTO_SERIAL=0 关闭串行内联 → 74 ms/步(2.3×恢复)**,线程池并行
+   证实可用。
+
+与 mjbatch 的结构性差异(为何"变成 mjbatch"不可行也不必要):
+- 并行粒度:mjbatch=env 级(每线程完整 mj_step + 私有 MjData,无跨 env
+  交互);qd=kernel 级(每步数百 launch 串行链,range-for 内部并行)。
+- runtime 单例:qd.init 进程级全局(二次 init 作废既有分配),不能进程内
+  起 N 个独立引擎实例;多进程方案与 mjlab 单 sim 语义不匹配。
+- 内存布局:mjbatch 线程私有连续 f64(cache 友好)vs qd 全局 (nworld,...)
+  f32 批量数组(padding + 跨 world 带宽)。
+- 上限:调好并行(~55-74 ms/步 ≈ 55-74k steps/s)仍距 mjbatch(16.6 ms/步,
+  247k)3-4×——kernel 链同步 + 批量布局的结构性成本。CPU 臂定位不变
+  (classic 为速度口径,qd.cpu 为 parity/开发口径,qd 主场在 metal)。
+
+上游建议(待登记 quadrants A 系):阈值从全局常量 64 改为按 launch 任务
+数/工作量动态判定,或批量场景按 nworld 放大任务计数——否则大批量物理
+kernel(nworld 大、元素维小)整体落入串行区。
