@@ -528,3 +528,34 @@ ntasks 与 nworld 的关系按 kernel 形态分三类:
   必须 ∝ nworld);对 solver 单维 kernel 逐个核对 __n0 口径。
 - mmjlab(短期):QD_AUTO_SERIAL=0 已验证 2.3×(170→74 ms/步),不设默认,
   等上游结构性修复。
+
+### 12.9 qd.metal 标度曲线与「快于 mjbatch」的可行性判定(2026-10-24 深夜,同负载窗口)
+
+四点标度(humanoid@metal,per-step = repeat 时长/steps):
+
+| envs | 256 | 1024 | 2048 | 4096 |
+|---|---|---|---|---|
+| steps/s | 7,693 | 40,313 | **50,016** | 35,474 ↓ |
+| ms/步 | 33.3 | 25.4 | 40.9 | 115.5 |
+
+要点:①256→1024 per-step 反而下降(GPU 欠利用,固定 submit/encode 开销
+~25ms 主导);②1024→2048 边际 ~15µs/env 健康;③**2048→4096 边际成本
+2.4× 恶化(>2048 存在超线性劣化,steps/s 不升反降)**——metal 侧新问题,
+待上游归因(缓冲超限/occupancy 饱和/分页分配路径?)。
+
+天花板判定(外部锚点:mjlab nightly 875k sps@4096 = 4.7ms/步 @RTX 5090;
+M1 Pro GPU 算力/带宽 ≈ 1/16–1/40)→ M1 Pro GPU humanoid 物理算力天花板
+≈ 50–60k steps/s,**2048 点(50k)已经打到**;4096 若修掉劣化也只到 ~60k。
+对比 classic 同窗 247k(空窗 ~398k):**硬件差 5–8×,软件优化追不平**。
+
+「qd.metal 快于 mjbatch」的四个真实赛场:
+1. 更强 GPU:M4 Max(~6×)/Ultra、或 qd.cuda 路线(NVIDIA 机器)——
+   mmjlab 代码不变,同代码按机器分档;
+2. 小模型大批量 + launch 合批(fixed ~25ms 压到 <1ms 后,小模型场景
+   GPU 摊销优势才显现);
+3. 物理+渲染+观测全驻留 GPU 的端到端管线(省 CPU↔GPU 往返,视觉任务
+   收益最大);
+4. CPU 弱的异构机器(Mac 生态唯一 GPU 物理选项的平台价值)。
+
+上游待办登记:①metal >2048 envs 超线性劣化归因;②physics launch 普查
+(照搬 render-perf 985-launch 方法论,量化 encode/submit 占比)。
