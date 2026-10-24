@@ -502,3 +502,29 @@ session),速度绝对值被压低;**同窗口内的横向对比有效**,跨窗�
 上游建议(待登记 quadrants A 系):阈值从全局常量 64 改为按 launch 任务
 数/工作量动态判定,或批量场景按 nworld 放大任务计数——否则大批量物理
 kernel(nworld 大、元素维小)整体落入串行区。
+
+### 12.8 阈值语义:任务数 vs 环境数(答"如何做更好")
+
+判定代码(quadrants runtime.cpp:1807,1819):`ntasks = (end-begin)/block_dim`;
+`ntasks <= serial_range_threshold(默认 64) && step==1` → 提交线程内联串行,
+否则进线程池。微基准(bench_dispatch_threshold.py):≤64 任务 9µs/launch
+(内联),65 起 9–20µs(池,热态唤醒税低于 A59 记录的 11–18µs 冷态值),
+大任务量线性扩展。
+
+ntasks 与 nworld 的关系按 kernel 形态分三类:
+1. 扁平化(主流):`for t in range(nworld×inner)` → ntasks ∝ nworld
+   (4096 humanoid ≈73k),恒走池 ✓;
+2. 单维 kernel(solver 线 23 个 `range(__n0)`):`__n0` = nworld 的走池;
+   `__n0` = nv/nefc/island 数的**不随 nworld 增长,恒 ≤64 → 恒内联**——
+   QD_AUTO_SERIAL=0 的 2.3× 即来自这批热路径(确切清单待 mujoqo 插桩);
+3. 嵌套小外层(外层 nbody/npair、内层 nworld):同理恒内联。
+
+改进建议(按层):
+- quadrants(根治):①codegen 期已知循环界,对"小外层×大内层"嵌套做自动
+  扁平化或把内层工作量计入 ntasks 判定(任务数→工作量);②暴露 per-launch
+  inline/pool 计数与耗时(现在只能开关差分);③`qd.loop_config(serial=...)`
+  per-launch 覆写。
+- mujoqo:批量入口 kernel 统一扁平化约定 + CI 断言(批量 kernel 的 ntasks
+  必须 ∝ nworld);对 solver 单维 kernel 逐个核对 __n0 口径。
+- mmjlab(短期):QD_AUTO_SERIAL=0 已验证 2.3×(170→74 ms/步),不设默认,
+  等上游结构性修复。
