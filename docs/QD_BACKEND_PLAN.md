@@ -559,3 +559,31 @@ M1 Pro GPU 算力/带宽 ≈ 1/16–1/40)→ M1 Pro GPU humanoid 物理算力天
 
 上游待办登记:①metal >2048 envs 超线性劣化归因;②physics launch 普查
 (照搬 render-perf 985-launch 方法论,量化 encode/submit 占比)。
+
+### 12.11 任务库冒烟:三库 × 双后端全绿 + supermimic_vibed 勘察(2026-10-24)
+
+环境:三任务库 editable 挂入 .venv-qd(--no-deps):microduck_rl 0.1.0 /
+wuji-mjlab 0.1.0 / wbc-mjlab 0.0.6;缺口补齐:numpy 钉 <2.5(2.4.6,wbc 约束)、
+bam 从 microduck venv vendor(纯 Python)+ 导入守卫补丁(bam/mjlab.py:41 顶层
+`import mujoco_warp` 仅为注解,mmjlab 无此包,运行时 duck-typed)。56 任务
+全部注册。训练入口:MJLAB_TRAIN_DEVICE=cpu,256 envs,1 迭代。
+
+| 任务(256 envs,1 iter) | classic | qd | 备注 |
+|---|---|---|---|
+| Mjlab-Velocity-Flat-MicroDuck | 0.70s | 7.01s | BAM+efc 链路 classic 正常;qd 臂 BAM 经 QdBridge 透传 Constraint 未崩,**efc 语义 parity 未验证(R1)** |
+| WujiHand_Reorient | 1.55s | 28.27s | qd 首迭代含 JIT;wuji 需 --agent.logger tensorboard |
+| Wbc-G1(dance.npz) | 2.08s | 7.03s | wbc 走 motion-file 直传;G1 级模型 qd 训练正常(12.7 的 G1 疑虑排除) |
+
+资源:全程磁盘无新增负担(任务库 editable 零拷贝);训练进程 RSS ~0.2-1GB。
+Wbc 需要 `--env.commands.motion.motion-file`(本安装版 wrapper 无 --dataset 旗标;
+数据在 wbc-mjlab/data/g1/samples/npz/*)。
+
+**supermimic_vibed 勘察(zita-ch,★483)**:已 clone 到 external/(ghfast 镜像)。
+**该仓库无 mjlab 可换**:基于 Isaac Lab 3(kit-less)+ Newton(MJWarpSolverCfg
+内嵌 mujoco-warp),env.py 8 处 isaaclab/newton import,train.py 走
+isaaclab.app 启动器。「换 mjlab→mmjlab」实为**移植项目**(其 G1+LAFAN 跟踪
+任务功能上与 mmjlab 现成的 Tracking-Flat-Unitree-G1 / Wbc-G1 重合),两个
+可选路径:①复用其资产(G1 MJCF + LAFAN npz,tools/download_data.sh)在
+mmjlab 上写一个 supermimic 任务 cfg(1-2 天);②不接(已由 ②wbc 覆盖同
+能力)。其训练镜像为 docker(用户排除),原样运行需 isaaclab 全家桶(数 GB,
+磁盘 9.6Gi 剩余不友好)。
