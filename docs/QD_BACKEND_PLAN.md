@@ -616,3 +616,38 @@ dense 输入案例:**Mjlab-Lift-Cube-Yam-Depth**——观测 = qd 相机渲染�
 (B,1,H,W)(`camera_depth`,policy CNN 直接消费);深度图即点云源表示,
 如需真 XYZ 点云在 obs term 加反投影即可。四足 sample = MicroDuck(双后端
 已验)。
+
+### 12.14 新栈验证:CPU/Metal 性能线落地,metal 进入 mjbatch 同档(2026-10-25 晚)
+
+环境:quadrants **dev176**(56db7c491 robostudio-main squash = CPU/Metal 性能线
+落地:语言工程五件默认 ON + BLAS-3 blocked 等;注:版本号 dev176 晚于 dev184
+的提交线,用户口中的"更新"即此线;grad_for `_already` 已在上游修好,热修不再
+需要)+ mujoqo **f23fe51**(metal-overhead-cjac:A86 S1 ctrl 修复 + eq_data
+vec12 的 mujoco 3.17 适配——实测兼容 3.15 host,回归 53 passed)。
+mujoqo editable 自动跟随源码树(455d3f9→f23fe51)。
+
+**mjlab 集成三臂**(humanoid@4096,load ~2.1-2.6):
+
+| 臂 | steps/s | ms/步 | 对上轮 |
+|---|---|---|---|
+| classic(iter=100) | 447,090 | 0.92 | 持平 |
+| qd.cpu | **166,128** | 2.47 | +66%(dev184 当日 100k) |
+| qd.metal | **195,130** | 2.10 | **5.0×**(39.1k);@256 = 42,886(3.8×,首超 qd.cpu) |
+
+**引擎级原生对照**(不经 mjlab):metal@4096 = **322,790(12.7ms/步)**,落在
+mujoqo 自报区间(14.25ms,min 11.8)✓——「qd.metal ≈ mjbatch」在原生口径成立
+(mujoqo 报 metal 11.8min vs mjbatch 11.33ms,差 4%)。
+
+**solver 预算披露(关键口径)**:humanoid 基准 XML 的 opt.iterations=**10**,
+而 mjlab MujocoCfg 默认强制 100。qd.metal@4096 以原生预算经 mjlab 测得
+**355,744(11.51ms/步)**——优于 mujoqo 自报。classic 在 iter=10 下确定性失稳
+(21k,接触爆掉的动力学假象,与负载无关),故预算配对的 classic 点不可得;
+**默认预算(iter=100,两臂同配)下的诚实差距 = 2.3×**,来源是 solver 预算差
+而非集成损耗或引擎算力。
+
+测量纪律教训:SuperMimic 会话遗留的 swap 压力(4.6GB)曾使 classic@4096
+瞬态测出 20.7k(21× 假崩,与 iterations 无关,复测即恢复 445k)——
+**跑基准前先查 swap/内存压力**。
+
+结论:用户目标(qd 与 mjbatch 同档)在 metal 原生口径已成立;mjlab 默认口径
+2.3× 的剩余差距来自 solver 预算口径,可作为披露项而非缺陷。
