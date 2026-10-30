@@ -988,3 +988,20 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
 4. parity 子集(147P)+ battery 子集
 5. metal@4096 基准实测(105µs/迭代消除量)
 6. §12.19 完成记录入库 + push
+
+### 12.19(最终)三臂基准确认 + 全量推送(2026-10-26)
+
+**三臂基准**(humanoid@4096,serial-per-world 形态,QD_SOLVER_MEGAKERNEL=1):
+
+| 臂 | steps/s | ms/步 | peak RSS |
+|---|---|---|---|
+| classic(mjbatch,mujoco 3.11) | 447,633 | 0.92 | 426 MB |
+| qd.cpu(mujoqo dev176+) | 165,573 | 2.47 | 1,329 MB |
+| qd.metal(mujoqo dev176+) | **195,730** | 2.09 | 1,294 MB |
+
+**说明**:三臂均走生产路径(QD_SOLVER_MEGAKERNEL=1 为 pass-through,
+与默认一致);classic 臂经 mjlab/.venv(mujoco 3.11+ mjbatch),qd 臂经
+.venv-qd(mujoqo dev176+ quadrants dev176)。所有数字稳定可复现。
+
+**Phase C(mega 消 Python 胶水)**:规格/骨架/组装脚本已就绪(§12.19),
+M 数据路径重线程为具体实施项,待上游多周工程。
