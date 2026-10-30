@@ -712,3 +712,32 @@ dev176 worktree 实施验证推翻了 §12.15 的两条判断,以实测修正:
   mmjlab 侧以「训练轨迹逐点一致 + battery 147P」为验收门。
 - 遗留:grad_for dev184 热修(12.13)在 dev176 已由上游修复,本分支
   重装 dev176 后无需热修。
+
+### 12.17 ③ megakernel 开发落地:stage-1 移植 + 双 arch parity 冒烟(2026-10-25)
+
+mujoqo worktree(feat/solver-read-batching,自 port/p1-forward-chain)commit
+b9212f0:
+- `mujoco_qd/_src/solver_mega.py`:one-threadgroup-per-world,Newton 迭代循环
+  kernel 内 + done 门(块级 flag)。stage-1(efc force/state 更新)已完成移植:
+  lanes 分划 njmax 行,行逻辑与 `_update_constraint_efc` 非 track_changes
+  变体逐句同构,`_eval_constraint`(@qd.func)原样复用——**行间独立 +
+  行内同构 ⇒ 数值一致性可证**,无需容差。
+- **stage-1 确定性 parity 冒烟(tools/solver_mega_stage1_smoke.py)**:
+  equality/friction/limit 三类行 × CPU(block-tier 仿真,兼验跨平台语法)/
+  metal 双 arch 全 PASS(力值逐位核对:-1.0/-0.1/0.0)。
+- `solve()`:QD_SOLVER_MEGAKERNEL=1 时显式 raise(默认关;stage 2-4 未移植
+  前杜绝静默错误结果)。
+
+过程中钉死的 qd AST 约束(候选上游 A 系):3 参 range、while 条件内的
+ndarray 读,均未过 AST 验证;行循环改有界 for + if 门(统一控制流)。
+另:阶段移植验证时曾出现"ctx_Jaref 读零"假象,根因是 sed 链补丁破坏
+kernel 体——干净重写后即绿;**块 kernel 开发必须整段重写,禁止 sed 链式
+补丁**。
+
+后续(stage 2-4,每 stage 一轮迭代:移植 → 冒烟 → 双 arch parity):
+- stage 2:qfrc/grad/JTDAJ/Cholesky/search(源 = cholesky-coop 体,
+  SharedArray 驻留;体量最大)
+- stage 3:linesearch(源 = linesearch-iterative 体,内部 alpha 循环)
+- stage 4:done/solver_niter(小块)
+- 全部完成后:solve() 接线生效 → battery parity 子集 → metal@4096 实测
+  105µs/迭代的消除量(目标:21ms → ~11-13ms,solver 段剩余 GPU 真实算力)。
