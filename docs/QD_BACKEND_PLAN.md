@@ -837,3 +837,14 @@ stage-1(f2b7da1 前身 b9212f0)+ stage-4(c567dc3)移植与双 arch parity、
 
 **用户目标(qd ≈ mjbatch)的状态**:原生预算下已达成(差 4-12%);
 mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)。
+
+### 12.19(完成记录)QD_SOLVER_MEGAKERNEL=1 可运行 + 全部推送(2026-10-25)
+
+- **QD_SOLVER_MEGAKERNEL=1 可运行**:solve() 门改为 pass-through(走生产
+  路径,与默认一致)——Phase C scaffold 就绪(solver_mega.py stage-1/4),
+  体并入后切换为 mega launch。当前不含 mega 加速,但门已通、switch 预留。
+- **全量推送**:mmjlab feat/qd-backend、mujoqo-wt feat/solver-read-batching、
+  simtest main 三仓库/分支全部推送至远端。
+- **metal@4096**:194,996 steps/s(21.0ms/步)——与 §12.18 基线一致,
+  dev176 无回退。Phase C 落地后目标:消 105µs/迭代胶水 → 预期 ~11-14ms。
+- microduck qd 冒烟:4.74s/迭代(较此前 5.88s -19%,dev176 CPU 优化兑现)。
