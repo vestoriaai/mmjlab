@@ -651,3 +651,29 @@ mujoqo 自报区间(14.25ms,min 11.8)✓——「qd.metal ≈ mjbatch」在原�
 
 结论:用户目标(qd 与 mjbatch 同档)在 metal 原生口径已成立;mjlab 默认口径
 2.3× 的剩余差距来自 solver 预算口径,可作为披露项而非缺陷。
+
+### 12.15 metal 2.3× 差距分解与三条优化路径的归属/代价/依赖(2026-10-25,移交 mujoqo+quadrants 两线)
+
+**差距解剖(实测两点共线拟合,iterations=10 与 100)**:qd.metal@4096 humanoid
+每步 21.0ms(iter100)/11.51ms(iter10)→ **solver 边际 ≈105µs/迭代,非 solver
+链底 ≈10.5ms/步**;对照 classic 同预算整步 0.92ms(solver ≈5µs/迭代)。
+2.3× = 迭代税 20×(kernel 边界+device 栅栏 vs 线程内 for)+ 链税(138 kernel
+镜像链的逐个 submit/sync + 全局数组流式)。GPU 本体计算占比很小。
+
+**三条路径的归属/代价/依赖**(勘察依据:rhi/metal/metal_device.mm 提交层、
+lang 层无 plan 模块、forward.py 49 个胶水函数):
+
+| 路径 | 归属 | 代价 | 收益 | 依赖/次序 |
+|---|---|---|---|---|
+| ① 一步一提交批编码 | **quadrants 为主**(rhi/metal 提交层),mujoqo 接入 | 1–2 周(RHI 生命周期 + hazard/AD tape 回归) | 消 submit 往返税;渲染线同模式已验证(985 launch 单 submit) | 无硬依赖;②落地后组合更优 |
+| ② C2 replay + launchtiled fusion | **机制在 quadrants**(lang 层 plan/replay + codegen 融合,现无雏形,C0 toy 已实测 16×),**数据在 mujoqo**(被录制的 138 链 + batch-last 布局改造) | C2 硬化 2–5 天(失效键五元组,漏=静默错);fusion 开放式逐对 | 消 Python 胶水(16× 实测)+ 融合消边界;双 arch | **与 ③ 次序约束:solver 区留白给 ③**,勿先融合 |
+| ③ solver megakernel | **mujoqo 为主**(solver 重写),quadrants 出既有 block-tier/threadgroup 基建 | 2–4 周;风险=Metal 编译器(A70 前科)+ parity 门 + 小 nworld 摊销 | **消 105µs/迭代税(solver 10.5ms→~1-2ms)**;MJX/Brax 同构 | 独立于 ①②;env 间独立性保证语义安全 |
+
+预期:E1(①+②非solver区)→ 链底 10.5ms→~3-6ms;E2(③)→ solver →~1-2ms;
+合计 metal@4096 ≈ 4-8ms/步(500k-1M sps),**反超 mjbatch(447k)为合理工程目标**。
+
+**为何此前未做**(证据):10-22 立项评估已成文并过第一性 review,但当时
+优先级在正确性冻结(battery 1870P/A 系清账——重构 138 链会使全部编译缓存
+失效,文档自警"改 forward 未失效=静默错");且 metal 115ms 时代编排优化
+收益感知低——robostudio-main 线把它打到 14.25ms 后,剩余差距才恰好全部
+变成编排开销,本周升格为最高杠杆。
