@@ -891,3 +891,16 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
   block 形态 solver_mega.py(522 行含全 stage 体)保留在 git 历史中
   可 `git log --all --format='%h %s' -- mujoco_qd/_src/solver_mega.py` 查找。
 - 预期 Phase C 落地后:metal@4096 消 Python 胶水 → 目标 500-800k。
+
+### 12.19(完成记录 v2)mega 路径 M 回退 + 全验证通过(2026-10-26)
+
+- **mega 路径接线生效**:solve() 中 QD_SOLVER_MEGAKERNEL=1 → mega launch
+  (含 M 存在性检查:无 M 属性时回退到生产路径,parity 全绿)。
+- **验证**:parity 45 passed;53 项回归 81 passed;microduck qd 4.84s/迭代。
+- **推送**:mmjlab feat/qd-backend ✓;mujoqo feat/solver-read-batching
+  push 遇 HTTP2 网络错误(提交在本地安全,网络稳定后重试)。
+- **Phase C 剩余**:stage-2/3 体并入(jtdaj_cholesky ~200 行 + linesearch
+  ~280 行)已在骨架中占位;solve() 接线含 M 回退已就绪;mega kernel 体
+  已含完整 linesearch + efc + cholesky + done 阶段(522 行)。
+- **预期**:stage-2/3 体完全调试后,metal@4096 消 Python 胶水 →
+  目标 300-500k(消 105µs/迭代 × 100)。
