@@ -914,3 +914,26 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
 - **Phase C 剩余**:humanoid 级模型(humanoid.xml)的 mega 路径验证(M 数据
   存在于复杂模型,需实测确认);battery parity 子集(147P);metal@4096
   复测。全部前置分析在 §12.15-12.19 完整入库。
+
+### 12.19(补充)ctx_Jaref 读零根因定位:qd AST 块级缺陷(2026-10-26)
+
+隔离实验(/tmp/isolate_jaref.py,quadrants dev176):
+- V0(serial per-world,无 block): PASS ✓
+- V1(+ SharedArray 无 sync): PASS ✓
+- V2(+ block_dim + sync): PASS ✓
+→ block-tier 基础设施(SharedArray/sync/lane 分划)本身正常。
+
+**根因定位**:cholesky-mega 体(NVP×NVP Hs + Jk + 多段 sync + 嵌套循环)
+并入同一 kernel 后,后续 stage 的 ndarray 读(`ctx_Jaref_in[worldid, row]`)
+返回 0。隔离后(cholesky 拆为独立 launch)读取正常。根因 = **qd AST 在
+同一 kernel 内混合 block-tier(SharedArray+sync)与大数组 ndarray 读时
+存在转换缺陷**,需上游 A 系登记。
+
+**正确结论**:全 stage 单 kernel megakernel 需先修复上游 qd AST 缺陷
+(块级代码与大数组读交互)。当前应**保持生产路径的 kernel 分离方式**
+(每 stage 独立 launch),这不影响 parity 且已在生产中验证。
+
+**可执行优化(替代 Phase C)**:
+1. QD_SOLVER_READ_EVERY 批化读(已落地,1.9µs/读)
+2. 减少 Python 发起数:合并相邻小 kernel(如 zero_grad_dot + grad)
+3. C2 replay 上游落地后换入(消 Python 发起链)
