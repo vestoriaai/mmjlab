@@ -587,3 +587,32 @@ isaaclab.app 启动器。「换 mjlab→mmjlab」实为**移植项目**(其 G1+L
 mmjlab 上写一个 supermimic 任务 cfg(1-2 天);②不接(已由 ②wbc 覆盖同
 能力)。其训练镜像为 docker(用户排除),原样运行需 isaaclab 全家桶(数 GB,
 磁盘 9.6Gi 剩余不友好)。
+
+### 12.13 dev184 更新验证:CPU/Metal 加速兑现 + dense 输入案例跑通(2026-10-25)
+
+环境:quadrants dev184(2c847b3d,自 mujoqo _port.venv 同 ABI 复制)+ 热修——
+**dev184 的 grad_for.decorated 漏读 `_already`**(A86 修复被部分套用到 grad_for
+变体,NameError 崩 parity 测试;已按 A86 同构修复,上游需跟进,同 bug 应存在
+于 _port.venv)。回归 53 passed。本窗 load 1.85(历次最静)。
+
+裸物理三臂(humanoid):
+
+| 臂 | 256 | 4096 | 对比 |
+|---|---|---|---|
+| classic | 420,295 | **449,117** | 历史最佳(空窗) |
+| qd.cpu | 21,885 | **100,040** | 4096 较 dev142 空窗 74.4k **+34%**,对 classic 差距 5.4×→4.5× |
+| qd.metal | 11,258 | 39,129 | 4096 较 dev152 35.5k +10% |
+
+任务级(256 envs,1 iter,qd 后端除注明):
+
+| 任务 | classic | qd | 上轮 qd |
+|---|---|---|---|
+| microduck(四足场景 sample) | 0.57s | 5.88s | 7.01s(-16%) |
+| WujiHand_Reorient | — | 19.83s | 28.3s(含 JIT) |
+| Wbc-G1 | — | 5.25s | 7.03s(-25%) |
+| Mjlab-Lift-Cube-Yam-Depth(dense) | — | 15.33s | 首跑 |
+
+dense 输入案例:**Mjlab-Lift-Cube-Yam-Depth**——观测 = qd 相机渲染深度图
+(B,1,H,W)(`camera_depth`,policy CNN 直接消费);深度图即点云源表示,
+如需真 XYZ 点云在 obs term 加反投影即可。四足 sample = MicroDuck(双后端
+已验)。
