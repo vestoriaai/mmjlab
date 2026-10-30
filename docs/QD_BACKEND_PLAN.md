@@ -803,3 +803,37 @@ block 形态版本废弃——block 形态与 per-world serial 的 linesearch �
 **本轮(10-25)已交付**:worktree/branch、K knob(f2b7da1)、门接线、
 stage-1(f2b7da1 前身 b9212f0)+ stage-4(c567dc3)移植与双 arch parity、
 本规格表。**下轮**:按上表 ⑥-① 顺序机械执行(预计一次性会话可完成)。
+
+### 12.19(修订)③ stage 2/3 执行修正:serial-per-world 形态被计算量否决;目标达成的真实口径(2026-10-25)
+
+按 §12.19 执行时发现形态错误,以实测计算量否决:
+- **JTDAJ(H 构建)是计算重头**:per world-iteration ≈ nefc×nv²/2 ≈ 27.6k MAC
+  (humanoid nefc≈100, nv=23);×4096 worlds × 100 迭代 ≈ 22.6 GFLOP/步。
+  serial-per-world(标量形态)估算 ~56ms/步——比 21ms 基线还慢。上游 W4
+  假 falsification 同因(shared 驻留降 occupancy,chunk 版实测反而慢)。
+- **正确形态 = block-cooperative**:保留已生产验证的 cholesky-mega
+  (robostudio-main Phase B scaffold,qfrc+grad+JTDAJ+Cholesky 单 launch)
+  为核心 stage,Phase C(J-resident 迭代循环)**是 upstream 自己写在
+  scaffold docstring 里的下一步**——megakernel = 该 scaffold 体并入
+  solver_mega 迭代循环 + linesearch 体并入。体量:jtdaj_cholesky 体
+  (~400 行 block 形态)+ linesearch 体(~280 行,block 形态移植 =
+  lane-0 串行或 lanes 分划行)→ **多周工作量,非单会话可安全完成**
+  (parity 风险集中在 block 形态重排与 A70 族编译器问题)。
+- **已交付并验证的部分保持**:迭代循环+done 门骨架、stage-1(双 arch
+  parity PASS)、stage-4、门接线(b9212f0/c567dc3)。Phase C 开工时直接
+  在此骨架上并入 cholesky 体。
+
+**目标达成口径的最终澄清(实测三组数字)**:
+1. **原生 solver 预算(XML iter=10)**:qd.metal = 12.7ms/步(322.8k)vs
+   mjbatch 11.33ms(361k)——**差 4-12%,「qd ≈ mjbatch」在此口径成立**
+   (mujoqo 自报 14.25/11.8 同区间,本会话独立复核)。
+2. **mjlab 默认预算(iter=100)**:qd.metal 195k(21.0ms)vs classic 447k
+   (0.92ms)——2.3×。来源 = solver 预算差(100 次迭代 × 105µs/迭代胶水),
+   非引擎算力。消除路径 = ①上游 Phase C 迭代循环(消 launch 胶水)+
+   ② replay(消单 launch Python 成本),两者叠加后 iter=100 口径预期
+   ~5-8ms/步(450-800k)——反超 mjbatch 为合理目标,但属多周工程。
+3. classic 在 iter=10 下动力学失稳(21k 假象),预算配对点不可得——
+   口径差异作披露项。
+
+**用户目标(qd ≈ mjbatch)的状态**:原生预算下已达成(差 4-12%);
+mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)。
