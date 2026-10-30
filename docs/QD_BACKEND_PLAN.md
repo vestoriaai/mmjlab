@@ -1005,3 +1005,59 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
 
 **Phase C(mega 消 Python 胶水)**:规格/骨架/组装脚本已就绪(§12.19),
 M 数据路径重线程为具体实施项,待上游多周工程。
+
+### 12.20 Phase C ③ megakernel 全量落地:A73 结案 + 双 arch 位精确 + 实测(2026-10-30)
+
+**A73 定性更正(结案)**:§12.19(补充)登记的"块级 SharedArray+sync 与
+ndarray 读交互读零"为**探针方法学错误**——V3+ 变体脚本定义了 kernel 却
+从未 launch,"读零"实为读未写入的零初始化 buffer。带 launch 的 45 参数
+位置探针(位置 0..44 全通过)与 522 行真实 megakernel differential 全绿。
+mujoqo docs 与 quadrants docs(需求清单)双侧已改写为结案记录,
+**无上游修复依赖**。quadrants 需求清单不设修复条目(避免幽灵工单)。
+
+**megakernel 全量接线(mujoqo feat/solver-read-batching)**:
+
+- solver_mega.py(522 行,45 参数):mv(CSR gather,strided+if 门)→
+  linesearch(lane-0)→ efc(lanes 分划)→ JTDAJ+qfrc/grad+Cholesky+search
+  (block-coop,与 block_cholesky_coop 同构)→ done(lane-0),迭代循环在
+  kernel 内;`@cache_kernel` 防 per-solve 重编译;块级循环内不使用 break
+  (flag 门控 + 幂等 stage,overshoot no-op 语义同 QD_SOLVER_READ_EVERY)。
+- solver.py 门重写:`hasattr(m,'M')`(恒 False,pass-through)→ 镜像
+  enabled_mega 切片门(NEWTON + 非 DISCRETE + 非 ELLIPTIC + dense 非
+  sparse/compact + 无 island + nv_pad/njmax 界内),**M_in = d.M**
+  (Data 侧,与 fused-cholesky 消费一致);位置在 init_context +
+  _update_gradient 之后(初始 search 已就绪),只替换迭代循环。
+- io.py:eq_data 列数跨版本兼容(mjNEQDATA 11@mujoco≤3.15 → vec12,
+  slot[11] 无读者,字段拷贝处 pad 对齐)。
+
+**differential 冒烟(tools/solver_mega_full_smoke.py)**:constraints.xml /
+collision.xml(接触)/ humanoid.xml(nv=23)× 5-20 步 × **CPU+metal 双
+arch**:production vs mega **qacc 逐位一致(dQacc=0.00e+00)**,
+solver_niter 逐步一致。
+
+**回归**:solver_test 63P + smooth_test(147P 对)metal 全绿;
+mmjlab 五任务库经默认路径不受影响(mega 默认关,门未命中走生产)。
+
+**metal@4096 实测(humanoid,iter_cap=30,solver wall)**:
+
+| 配置 | med | min |
+|---|---|---|
+| production READ_EVERY=1(默认,逐迭代读) | 16.20ms | 10.59ms |
+| production READ_EVERY=1000(无逐迭代读) | 12.35ms | 12.03ms |
+| megakernel(0 host 往返) | 14.05ms | 13.29ms |
+
+- vs 默认生产:**消除 ~72µs/迭代**(med 2.15ms/30 iter),端到端
+  bench 4096:170,830 → 173,954 steps/s(+1.8%);256 env:42,614 →
+  42,925(+0.7%,humanoid 收敛 1-2 迭代,胶水占比小,中性)。
+- vs READ_EVERY=K 批读:fused mega 的 kernel 内迭代计算仍慢于生产的
+  分 stage 优化 kernel(~57µs/iter),K 批读在 4096 大 batch 下仍是
+  solver 最优解;mega 的价值在消全部 host 往返(无 K knob 依赖)+
+  高迭代数场景。
+- §12.16 的 105µs/迭代系逐迭代读(commit+drain)条件下的实测上限,
+  本轮在 4096 实测消除 72µs/迭代(vs 默认)+ ~128µs/迭代的读开销
+  可由 K 批读或 mega 二选一消除。
+
+**遗留(非阻塞)**:linesearch 为简化二/割线形态(非 447 行 verbatim 体),
+本轮 differential 位精确(简单/中等约束场景一致);强非线性摩擦锥场景
+如出现 alpha 分歧,再按 §12.19 源映射表换装 verbatim 体。ctx.h 在 mega
+迭代间不回写(共享内存驻留),非 incremental 切片内无消费者。
