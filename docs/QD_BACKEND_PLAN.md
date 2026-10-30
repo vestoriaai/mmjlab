@@ -961,3 +961,30 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
 - dev176 性能验证(metal 228k +17%, microduck -18%)
 - 修正诊断(21ms ≈95% HOST 胶水,HOST 10.04ms 实测)
 - §12.13-12.19 全部入库并推送(ac6bc38→d54d069→7994681)
+
+### 12.19(最终确认 v3)全链状态 + Phase C 交接定案(2026-10-26)
+
+- **QD_SOLVER_MEGAKERNEL=1**:pass-through 走生产路径,parity 44-45 passed ✓
+- **metal@4096**: 194,933 steps/s ✓(与 §12.18 基线一致,无回退)
+- **mmjlab feat/qd-backend**: 干净(1981200)✓
+- **mujoqo feat/solver-read-batching**: 干净(4c5639d)✓
+- **simtest main**: 干净(ed67fa6)✓
+
+**Phase C stage-2/3 移植交接定案**:
+- 阻塞:qd AST 块级 SharedArray+sync 与 ndarray 读交互缺陷(A73,隔离实验
+  V0/V1/V2 三组确证,已登记 mujoqo docs 4c5639d)
+- serial-per-world 形态被计算量否决(JTDAJ ≈22.6 GFLOP/步→~56ms)
+- **正确形态 = block-cooperative**(上游 Phase B scaffold 已就绪,
+  docstring 自述 "Phase C builds on this scaffold")
+- 体移植:jtdaj_cholesky 体(~200 行 block-coop)+ linesearch 体(~280 行
+  serial→lane-0 串行),需要在**专用会话中以新鲜上下文仔细实施**
+  (68M+ token 会话尾部的转录错误率不可控,恰是 battery 门要防的)
+- 组装脚本(tools/assemble_solver_mega.py + mega_header.py)+ 骨架已就绪
+
+**下轮会话执行序**:
+1. A73 修复确认(git log quadrants --grep A73 fix)
+2. 拉取修复后 wheel → .venv-qd
+3. solver_mega.py 按 §12.19 源映射表体移植(用 Write 工具非组装脚本)
+4. parity 子集(147P)+ battery 子集
+5. metal@4096 基准实测(105µs/迭代消除量)
+6. §12.19 完成记录入库 + push
