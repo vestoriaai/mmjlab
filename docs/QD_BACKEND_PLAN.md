@@ -848,3 +848,24 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
 - **metal@4096**:194,996 steps/s(21.0ms/步)——与 §12.18 基线一致,
   dev176 无回退。Phase C 落地后目标:消 105µs/迭代胶水 → 预期 ~11-14ms。
 - microduck qd 冒烟:4.74s/迭代(较此前 5.88s -19%,dev176 CPU 优化兑现)。
+
+### 12.19(完成记录)QD_SOLVER_MEGAKERNEL=1 可运行 + dev184 加速验证 + 全量推送(2026-10-26)
+
+- **QD_SOLVER_MEGAKERNEL=1 可运行**:solve() 门改为 pass-through(走生产
+  路径)。Phase C scaffold 就绪(solver_mega.py stage-1/4 骨架+组装脚本),
+  体并入后切换为 mega launch。parity 44 passed 确认无回退。
+- **dev184 加速验证**:quadrants CPU/Metal 性能线(语言工程五件套+BLAS-3
+  blocked 等)落地后实测:
+
+| 臂 | 4096 envs | 对最初基线 | 对 mjbatch(447k) |
+|---|---|---|---|
+| qd.metal | **228,726** | 39.1k→**5.8×** | 差距 11.5×→**1.95×** |
+| qd.cpu | 158,206 | — | 2.8× |
+| classic(mjbatch) | 447,090 | — | 基准 |
+
+- microduck qd:4.84s/迭代(较 5.88s -18%,dev176+ CPU 优化兑现)。
+- 全量推送:mmjlab feat/qd-backend + mujoqo feat/solver-read-batching +
+  simtest main 三仓库推送完成。
+- **Phase C 剩余**:jtdaj_cholesky 体(~200 行 block-coop)+ linesearch 体
+  (~280 行 serial→lane-0)并入 solver_mega 迭代循环 → battery parity →
+  metal@4096 复测。预期 Phase C 落地后 metal 进一步逼近 mjbatch。
