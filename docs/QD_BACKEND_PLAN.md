@@ -741,3 +741,29 @@ kernel 体——干净重写后即绿;**块 kernel 开发必须整段重写,禁�
 - stage 4:done/solver_niter(小块)
 - 全部完成后:solve() 接线生效 → battery parity 子集 → metal@4096 实测
   105µs/迭代的消除量(目标:21ms → ~11-13ms,solver 段剩余 GPU 真实算力)。
+
+### 12.18 ③ 续:stage-4 落地 + stage 2/3 规模定案(2026-10-25)
+
+- **stage-4(done/solver_niter/overflow)已移植**(c567dc3):lane 0 收敛判定
+  (alpha=0 / improvement<tol / gradient<tol / model_improvement<tol 四条件,
+  体移植自 _solve_done)+ 块 flag 联动(置位后循环 break)+ overflow 位 +
+  nsolving 原子递减。默认关,与 stage-1 同门。
+- **stage 2/3 规模定案**(读源后):
+  - stage 2(cholesky/search):源 = `kernel_update_gradient_cholesky_coop`
+    (block_cholesky_coop.py,block 协作 + SharedArray N×N 驻留 + 多段 sync),
+    体量 ~700 行,移植 = 把该体作为 megakernel 循环内的一个 stage(逐段
+    sync 保持)。
+  - stage 3(linesearch):源 = `_linesearch_iterative_kernel`(**per-world
+    serial 形态**——单线程含完整内部 alpha 循环,~450 行,依赖
+    _compute_efc_eval_pt_* qd.func 族)。移植形态 = megakernel 内 lane-0
+    串行(其余 lane 栅栏等待,正确但并行度损失);或保持独立 launch
+    (每迭代 1 次)——后者是折中选项,见下。
+  - **组合策略(推荐)**:megakernel 收 [stage1 efc + stage2 cholesky +
+    stage4 done](全 lane 或 lane-0 段)+ linesearch 保持独立 launch(它
+    已是 in-kernel 循环,每迭代仅 1 次 Python 发起)。每迭代 Python 发起数
+    6-8 → 2-3(mega + linesearch + read),胶水税减 ~2/3;剩余由 ② replay
+    (消单次发起的 Python 成本)补齐。**全 in-kernel 变体(含 linesearch
+    移植)作为 stretch**,待组合策略实测后再决定。
+- 交付状态:megakernel 骨架 + stage 1(parity 冒烟双 arch PASS)+
+  stage 4 已移植(默认关,门齐);stage 2 体移植 + linesearch 集成 +
+  battery parity + metal@4096 实测为后续迭代项。
