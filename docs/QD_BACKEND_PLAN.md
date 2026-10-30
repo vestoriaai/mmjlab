@@ -937,3 +937,27 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
 1. QD_SOLVER_READ_EVERY 批化读(已落地,1.9µs/读)
 2. 减少 Python 发起数:合并相邻小 kernel(如 zero_grad_dot + grad)
 3. C2 replay 上游落地后换入(消 Python 发起链)
+
+### 12.19(最终确认)全链状态与 Phase C 交接(2026-10-26)
+
+**已验证交付**:
+- QD_SOLVER_MEGAKERNEL=1 → pass-through 走生产路径,parity 44-45 passed ✓
+- metal@4096: 213,958 steps/s(19.1ms/步)✓
+- microduck qd: 4.61-4.84s/迭代 ✓
+- 五任务库全绿 ✓ / SuperMimic 45 迭代轨迹一致 ✓ / 三臂 profile ✓
+
+**Phase C(单 kernel mega)阻塞项**:
+- qd Model 无 `M` 属性(M 值在 Data 侧运行时计算,megakernel 需 M_in 参数)
+- ctx_Jaref 在块级 kernel 内读零(A73,隔离实验 V0-V2 三组 PASS 确认
+  非基础 block-tier 问题,而是复杂体交互触发)
+- 修复路径:①quadrants 上游修复 A73 + M 数据访问重线程;②或将 jtdaj_cholesky
+  拆为独立 launch(维持生产路径 kernel 分离,接受较少加速)
+
+**mmjlab feat/qd-backend 分支最终交付**:
+- mmjlab qd 后端替换(warp→mujoco_qd,去 warp 归零)1064 passed
+- 五任务库全绿(microduck/wuji/wbc/SuperMimic/YAM-Depth)
+- SuperMimic-Reproduced 换底座 45 迭代轨迹逐点一致
+- 三臂 profile(classic 449k / qd.cpu 166k / qd.metal 195-229k)
+- dev176 性能验证(metal 228k +17%, microduck -18%)
+- 修正诊断(21ms ≈95% HOST 胶水,HOST 10.04ms 实测)
+- §12.13-12.19 全部入库并推送(ac6bc38→d54d069→7994681)
