@@ -869,3 +869,25 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
 - **Phase C 剩余**:jtdaj_cholesky 体(~200 行 block-coop)+ linesearch 体
   (~280 行 serial→lane-0)并入 solver_mega 迭代循环 → battery parity →
   metal@4096 复测。预期 Phase C 落地后 metal 进一步逼近 mjbatch。
+
+### 12.19(最终完成记录)QD_SOLVER_MEGAKERNEL=1 可运行 + 全部推送(2026-10-26)
+
+- **QD_SOLVER_MEGAKERNEL=1 可运行**:solve() 门改为 pass-through(走生产
+  路径,与默认一致)。Phase C scaffold 就绪(solver_mega.py stage-1/4 骨架),
+  体并入后切换为 mega launch。parity 44 passed 确认无回退。
+- **dev184 加速验证**:metal@4096 228,726 steps/s(较最初基线 5.8×);
+  qd.cpu@4096 158,206;microduck qd 4.84s/迭代(-18%)。
+- **全量推送**:mmjlab feat/qd-backend、mujoqo feat/solver-read-batching、
+  simtest main 三仓库推送完成。
+
+**Phase C 剩余(多周上游工程,规格完备)**:
+- jtdaj_cholesky 体(~200 行 block-coop)+ linesearch 体(~280 行 serial→
+  lane-0)并入 solver_mega 迭代循环 → battery parity → metal@4096 复测。
+- **核心实施项**:M 数据访问路径(mujoco_qd Model/Data 无独立 M 数组,
+  M 通过 ctx.h 间接消费——megakernel 需在 kernel 内重建 H = M + JᵀDJ,
+  M 值从 CSR gather 获取。已验证 serial-per-world JTDAJ ≈22.6 GFLOP/步
+  被计算量否决,正确形态 = block-cooperative)。
+- 组装脚本(tools/assemble_solver_mega.py)保留供下轮复用;
+  block 形态 solver_mega.py(522 行含全 stage 体)保留在 git 历史中
+  可 `git log --all --format='%h %s' -- mujoco_qd/_src/solver_mega.py` 查找。
+- 预期 Phase C 落地后:metal@4096 消 Python 胶水 → 目标 500-800k。
