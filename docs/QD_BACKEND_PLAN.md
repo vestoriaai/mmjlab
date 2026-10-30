@@ -904,3 +904,13 @@ mjlab 默认预算下的完全追平 = Phase C 多周工程(§12.18 路线图)�
   已含完整 linesearch + efc + cholesky + done 阶段(522 行)。
 - **预期**:stage-2/3 体完全调试后,metal@4096 消 Python 胶水 →
   目标 300-500k(消 105µs/迭代 × 100)。
+
+### 12.19(最终)mega 路径接线完成 + push 成功(2026-10-26)
+
+- **mega 路径接线**:solve() 中 QD_SOLVER_MEGAKERNEL=1 → mega launch(含
+  M 存在性检查:简单模型回退到生产路径)。parity 44 passed ✓。
+- **push**:mujoqo feat/solver-read-batching 推送成功(18df63c);
+  mmjlab feat/qd-backend 已是最新;simtest main 已推送(ed67fa6)。
+- **Phase C 剩余**:humanoid 级模型(humanoid.xml)的 mega 路径验证(M 数据
+  存在于复杂模型,需实测确认);battery parity 子集(147P);metal@4096
+  复测。全部前置分析在 §12.15-12.19 完整入库。
