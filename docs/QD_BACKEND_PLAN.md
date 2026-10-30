@@ -677,3 +677,38 @@ lang 层无 plan 模块、forward.py 49 个胶水函数):
 失效,文档自警"改 forward 未失效=静默错");且 metal 115ms 时代编排优化
 收益感知低——robostudio-main 线把它打到 14.25ms 后,剩余差距才恰好全部
 变成编排开销,本周升格为最高杠杆。
+
+### 12.16 §12.15 修正:21ms 的真实构成是 HOST 侧 Python 发起胶水(2026-10-25 深夜)
+
+dev176 worktree 实施验证推翻了 §12.15 的两条判断,以实测修正:
+
+1. **①批编码:上游已完成(A1 metal launch model),关闭**。metal 提交层早已
+   管线化——persistent compute encoder(长串 dispatch 合并单 encoder)+
+   异步 commit + 32-launch 阀门只 commit 不 drain(A1 移除了旧版每 ~33 次
+   launch 的全量 drain,那才是当年 0.5-1.3ms/次、每步 ~4 次的串行点)。
+   "逐 launch submit 税"假设不成立。
+2. **K 批化读:语义安全但无收益,作为可选 knob 保留**(mujoqo-wt 分支
+   feat/solver-read-batching @ f2b7da1,QD_SOLVER_READ_EVERY,默认 1)。parity
+   13 passed(K=1/K=10 双验);K=10 时 metal@4096 = 183.6k vs K=1 的 195.1k
+   ——回读不是 105µs/迭代的主体。
+3. **决定性测量:HOST 侧每步发起耗时(无同步)= 10.04ms(min)**,与
+   拟合链底 10.46ms 吻合;wall 21.0ms(iter=100)≈ 链 glue 10ms + solver 循环
+   glue 10.5ms(105µs/迭代 × 100,**是每次迭代十几个 kernel 的 Python 发起
+   成本,非回读非 GPU exec**)。GPU 全程在挨饿。经典对照:classic 的
+   solver 循环在 C 侧(mjbatch 线程池内),同循环 ~5µs/迭代。
+
+**结论修正**:21ms 的 ~95% 是 HOST Python 逐 kernel 胶水——修复主路径为
+**② replay(消胶水,C0 toy 实测单 op 16×:4.92→0.31µs)预期 21ms→~2-5ms**,
+③ megakernel(消 launch 数)同向且在大规模下 GPU 侧亦有收益;§12.10 的
+"cache 驻留"叙事适用于 GPU 饱和后的下一阶段,当前不是首因。
+
+**执行状态与移交**(用户序:①→③→②):
+- ①:关闭(上游 A1 已实现)。
+- ③:worktree 就绪(mujoqo feat/solver-read-batching,K knob 已提交验证),
+  完整 megakernel = solver 区多周重写,本轮以正确性优先不做半成品;设计
+  输入已齐(迭代间 env 独立、done 门已存在、105µs/迭代即其可消除上限)。
+- ②:**证据升级为最高优先级**,但用户警示的 replay 静默错风险属实
+  (失效键五元组漏一即静默错)——建议 upstream 按 §12.15 表落地,
+  mmjlab 侧以「训练轨迹逐点一致 + battery 147P」为验收门。
+- 遗留:grad_for dev184 热修(12.13)在 dev176 已由上游修复,本分支
+  重装 dev176 后无需热修。
