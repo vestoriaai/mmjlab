@@ -767,3 +767,39 @@ kernel 体——干净重写后即绿;**块 kernel 开发必须整段重写,禁�
 - 交付状态:megakernel 骨架 + stage 1(parity 冒烟双 arch PASS)+
   stage 4 已移植(默认关,门齐);stage 2 体移植 + linesearch 集成 +
   battery parity + metal@4096 实测为后续迭代项。
+
+### 12.19 ③ stage 2/3 移植规格(serial-per-world 形态,下轮可机械执行)
+
+**形态定案**:serial-per-world(每 world 一个线程,整个 Newton 迭代循环
+kernel 内串行)。依据:linesearch-iterative kernel 本身就是 per-world serial
+形态(serialize=True 标记),其体可直接重线程;efc 逐行、grad、H 构建、
+serial cholesky 全部 per-world 串行;无 SharedArray/sync/lane 分划——
+最小改动、天然跨平台(CPU 无需 block-tier 仿真)。
+
+**文件**:mujoqo-wt-metal `mujoco_qd/_src/solver_mega.py`(重写现骨架,
+block 形态版本废弃——block 形态与 per-world serial 的 linesearch 不组合)。
+
+**迭代体 → 源映射(全部为既有已验证 body 的重线程,非新发明)**:
+
+| stage | 源(solver.py 行号) | 移植方式 |
+|---|---|---|
+| linesearch | `_linesearch_iterative_kernel` 体(L1003-1375) | **逐行重线程**(已是 per-world serial;quad 装配/3-alpha/bracketing/qacc+Jaref 更新,~300 行;复用 _compute_efc_eval_pt* qd.func) |
+| efc update | `_update_constraint_efc` 非 track 变体(L1893-2034) | 已移植(保留现有 stage 1) |
+| grad | `_update_gradient_grad` 体:grad = Ma - qfrc_smooth - qfrc_constraint(~10 行) | 逐行 |
+| H 构建 | dense JTDAJ:h = M + Σ_active D_r J_r J_rᵀ(~30 行 serial) | 逐行(放弃 incremental delta——数学等价,f32 量级差异入容差) |
+| factor+solve | serial cholesky W1 merged form(coop kernel else 分支)+ 前代/回代(~40 行) | 逐行 |
+| done | 已移植(stage 4) | 保留 |
+
+**接线**:solve() 中 `QD_SOLVER_MEGAKERNEL=1` 且 dense-Newton 条件(nefc>0,
+非 sparse/compact/islanded,pyramidal)→ 以 mega launch 替代 Python 迭代循环
+(init/epilogue 不变);其余路径保持现状。ctx 数组(~40 个)作 kernel 参数
+穿入穿出。
+
+**验证序**:① 单步数值对拍(humanoid,mega vs 生产路径 qacc,1e-3)→
+② 短程 rollout(100 步无分叉)→ ③ battery parity 子集 → ④ mmjlab 回归
+(53 项)+ microduck qd 训练冒烟 → ⑤ metal@4096 实测(对照 21.0ms 基线,
+目标:消 105µs/迭代 → 预期 ~11-13ms/步)→ ⑥ 入库 §12.19 完成记录。
+
+**本轮(10-25)已交付**:worktree/branch、K knob(f2b7da1)、门接线、
+stage-1(f2b7da1 前身 b9212f0)+ stage-4(c567dc3)移植与双 arch parity、
+本规格表。**下轮**:按上表 ⑥-① 顺序机械执行(预计一次性会话可完成)。
