@@ -93,6 +93,10 @@ class TorchArray:
     """Delegate attribute access to the underlying tensor."""
     return getattr(self._tensor, name)
 
+  @property
+  def device(self) -> torch.device:
+    return self._tensor.device
+
   @classmethod
   def __torch_function__(
     cls,
@@ -201,6 +205,16 @@ class QdBridge(Generic[T]):
 
   def __getattr__(self, name: str) -> Any:
     """Get attribute from the wrapped data, wrapping qd arrays as TorchArray."""
+    if name == "device":
+      # 消费方(如 raycast 常数张量的设备选择)需要与底层张量一致的设备;
+      # 从任一 qd 数组的 DLPack 张量取(空数组也在 _wrapped_cache 之前处理)。
+      cached = next(iter(self._wrapped_cache.values()), None)
+      if cached is not None:
+        return cached.device
+      for f in vars(self._struct).values() if hasattr(self._struct, "__dict__") else ():
+        if _is_qd_array(f) and f.shape and 0 not in tuple(f.shape):
+          return TorchArray(f).device
+      return torch.device("cpu")
     # Check cache first to avoid recreating wrappers.
     if name in self._wrapped_cache:
       return self._wrapped_cache[name]

@@ -213,7 +213,8 @@ class CpuRaycastContext:
         )
     else:
       body_excludes = [-1] * sensor.num_rays
-    self._body_exclude = torch.tensor(body_excludes, dtype=torch.long)
+    device = getattr(data, "device", None) if data is not None else None
+    self._body_exclude = torch.tensor(body_excludes, dtype=torch.long, device=device)
 
     groups = sensor.cfg.include_geom_groups
     include_all = groups is None
@@ -270,10 +271,11 @@ class CpuRaycastContext:
     rot = np.asarray(scratch.geom_xmat[geom_id]).reshape(3, 3)
     if not np.any(pos != 0.0) and np.allclose(rot, np.eye(3)):
       return "identity", None, None
+    device = getattr(self._data, "device", None) if self._data is not None else None
     return (
       "constant",
-      torch.as_tensor(np.ascontiguousarray(pos), dtype=torch.float32),
-      torch.as_tensor(np.ascontiguousarray(rot), dtype=torch.float32),
+      torch.as_tensor(np.ascontiguousarray(pos), dtype=torch.float32, device=device),
+      torch.as_tensor(np.ascontiguousarray(rot), dtype=torch.float32, device=device),
     )
 
   def _build_hfield(
@@ -292,7 +294,8 @@ class CpuRaycastContext:
     size = np.asarray(mj_model.hfield_size[hid])
     sx, sy, sz = float(size[0]), float(size[1]), float(size[2])
     raw = np.array(mj_model.hfield_data[adr : adr + nrow * ncol]).reshape(nrow, ncol)
-    f = torch.as_tensor(np.ascontiguousarray(raw), dtype=torch.float32) * sz
+    device = getattr(self._data, "device", None) if self._data is not None else None
+    f = torch.as_tensor(np.ascontiguousarray(raw), dtype=torch.float32, device=device) * sz
     # Per-cell corner table (h00, h10, h01, h11); edge rows/cols replicate so
     # clamped corner gathers never leave the table.
     r1 = torch.clamp(torch.arange(nrow) + 1, max=nrow - 1)
@@ -341,8 +344,9 @@ class CpuRaycastContext:
       inv_ldz0: torch.Tensor,
     ):
       dtype = origins.dtype
-      tmin = torch.full(origins.shape[:2], _BIG, dtype=dtype)
-      normals = torch.zeros(*origins.shape[:2], 3, dtype=dtype)
+      dev = origins.device
+      tmin = torch.full(origins.shape[:2], _BIG, dtype=dtype, device=dev)
+      normals = torch.zeros(*origins.shape[:2], 3, dtype=dtype, device=dev)
 
       for hf in hfields:
         if hf.pose_mode == "identity":

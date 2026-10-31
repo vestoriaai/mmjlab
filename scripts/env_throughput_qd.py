@@ -45,11 +45,11 @@ def main() -> None:
 
   def plan_state():
     out = []
-    for (mid, did), ent in plan._PLAN_CACHE.items():
+    for key, ent in plan._PLAN_CACHE.items():
       state = ent[0]
       kind = "replay" if (state is not None and not isinstance(state, str)) else (
         "impossible" if isinstance(state, str) else "not-recorded")
-      out.append((kind, ent[1]))
+      out.append((key[2] if len(key) > 2 else "step", kind, ent[1]))
     return out
 
   before = plan_state()
@@ -75,13 +75,17 @@ def main() -> None:
   after = plan_state()
 
   d = env.sim.wp_data
+  import numpy as _np
+  from mujoco_qd._src.types import OverflowType
   ovf = int(d.overflow.to_numpy().max()) if hasattr(d, "overflow") else -1
-  print(f"task={args.task} envs={args.num_envs} njmax={d.njmax} decimation={dec} plan.enabled={plan.enabled()} nefc_max={int(d.nefc.to_numpy().max())} overflow_bits={ovf}")
+  ovf_names = [ot.name for ot in OverflowType if ovf & int(ot)] or ["none"]
+  print(f"task={args.task} envs={args.num_envs} njmax={d.njmax} decimation={dec} plan.enabled={plan.enabled()} "
+        f"nefc_max={int(d.nefc.to_numpy().max())} overflow={ovf} ({','.join(ovf_names)})")
   print(f"  physics: {phys:,.0f} env-steps/s  ({1e3 * args.num_envs / phys / dec:.3f} ms/sim.step)")
   print(f"  env.step: {envsps:,.0f} env-steps/s  (manager 开销 {100 * (1 - envsps / phys):.1f}%)")
   print(f"  sim.forward()(eager,不走 replay): {t_fwd * 1e3:.3f} ms/次")
   print(f"  plan 状态(测量前): {before}")
-  print(f"  plan 状态(测量后): {after}   # (状态, 累计 eager 步数)")
+  print(f"  plan 状态(测量后): {after}   # (kind, 状态, 累计 eager 次数)")
   env.close()
 
 

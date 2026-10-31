@@ -233,8 +233,8 @@ class MeshCollider:
       (t [R]（无命中 +inf）, normal [R, 3]（单位、绕序法线；无命中 0））。
     """
     R = lo.shape[0]
-    t_best = torch.full((R,), float("inf"), dtype=lo.dtype)
-    n_best = torch.zeros(R, 3, dtype=lo.dtype)
+    t_best = torch.full((R,), float("inf"), dtype=lo.dtype, device=lo.device)
+    n_best = torch.zeros(R, 3, dtype=lo.dtype, device=lo.device)
     for r0 in range(0, R, _CHUNK):
       r1 = min(r0 + _CHUNK, R)
       self._traverse_chunk(lo[r0:r1], ld[r0:r1], max_dist, t_best, n_best, r0)
@@ -264,11 +264,11 @@ class MeshCollider:
     node_bound = bvh.node_bound
     node_meta = bvh.node_meta
     R0 = lo.shape[0]
-    stack = torch.full((R0, S), -1, dtype=torch.long)
+    stack = torch.full((R0, S), -1, dtype=torch.long, device=lo.device)
     stack[:, 0] = 0
-    sp = torch.zeros(R0, dtype=torch.long)
-    best_t = torch.full((R0,), float("inf"), dtype=lo.dtype)
-    best_n = torch.zeros(R0, 3, dtype=lo.dtype)
+    sp = torch.zeros(R0, dtype=torch.long, device=lo.device)
+    best_t = torch.full((R0,), float("inf"), dtype=lo.dtype, device=lo.device)
+    best_n = torch.zeros(R0, 3, dtype=lo.dtype, device=lo.device)
     # kept: 当前活跃张量到原始 chunk 下标的映射（紧凑时收缩；None = 全体）。
     kept: torch.Tensor | None = None
     inv = _safe_inv(ld)
@@ -473,8 +473,8 @@ def intersect_trians_bruteforce(
   nrm = nrm / nrm.norm(dim=-1, keepdim=True).clamp(min=1e-12)
   R = lo.shape[0]
   F = v0.shape[0]
-  t_best = torch.full((R,), float("inf"), dtype=lo.dtype)
-  n_best = torch.zeros(R, 3, dtype=lo.dtype)
+  t_best = torch.full((R,), float("inf"), dtype=lo.dtype, device=lo.device)
+  n_best = torch.zeros(R, 3, dtype=lo.dtype, device=lo.device)
   lo_u = lo.unsqueeze(1)
   ld_u = ld.unsqueeze(1)
   for f0 in range(0, F, 256):
@@ -637,13 +637,13 @@ class RaycastCoreContext:
       if has_hp:
         distances, normals = self._inner.height_scan(rays_o, rays_d)
       else:
-        distances = torch.full((B, N), -1.0, dtype=rays_o.dtype)
-        normals = torch.zeros(B, N, 3, dtype=rays_o.dtype)
+        distances = torch.full((B, N), -1.0, dtype=rays_o.dtype, device=rays_o.device)
+        normals = torch.zeros(B, N, 3, dtype=rays_o.dtype, device=rays_o.device)
       hit_pos = rays_o + rays_d * distances.clamp(min=0.0).unsqueeze(-1)
       return distances, normals, hit_pos
 
-    mesh_t = torch.full((B, N), _BIG, dtype=rays_o.dtype)
-    mesh_n = torch.zeros(B, N, 3, dtype=rays_o.dtype)
+    mesh_t = torch.full((B, N), _BIG, dtype=rays_o.dtype, device=rays_o.device)
+    mesh_n = torch.zeros(B, N, 3, dtype=rays_o.dtype, device=rays_o.device)
     for cand in self.mesh_colliders:
       self._intersect_mesh(cand, rays_o, rays_d, mesh_t, mesh_n)
 
