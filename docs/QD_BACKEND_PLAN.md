@@ -1265,3 +1265,30 @@ scratch)。16 fill/step 中消掉 4 个 launch。256 无回退;4096 收益在噪
 **机器噪声警告**:本机(16GB,后台有渲染/合成器负载)4096 metal 单次测量
 波动 2.4×(同代码 17.0/19.6/41.5ms),绝对吞吐结论需 min-of-N 或安静环境;
 相对 A/B 必须交替进行。
+
+### 12.26 14GB 精确计量 + njmax 重尾修正 + QD_FUSION 开关(2026-10-31)
+
+**14GB 组成(逐项计量)**:metal@4096 稳态驱动侧 13.87GiB =
+**convex scratch 5.99GiB**(29 个挂 Data 工作区,epa_pr/norm2/face 各
+800MB——naccdmax=819200 × 每候选槽位)+ **7.87GiB 驱动池/暂存/其他**
+(xctrace 资源分配表未覆盖 attach 前的分配,精确归属需进程内钩子,待查)
++ Model/Data 数组与 torch 可忽略。**非编译峰值**(编译产物 MB 级)。
+RSS 1.7GB 是构造后;14GB 是步进中 scratch 建立后的驻留,在 16GB 机器上
+页换——**1.6× 差距里含页换税**。
+
+**1.6× 的收敛路径(定性)**:① 削 convex scratch:naccdmax 与 naconmax 解耦
+或 nconmax 预算下调(受 reset 瞬态约束,见下)——上游改动;② quadrants
+Metal 缓冲池(全局复用 freed buffer)——消 7.87GiB 未归因部分,上游改动;
+③ ccd/com_pos 等 kernel 内 GPU 优化。三者均需单独立项。
+
+**njmax 重尾修正(microduck_rl 8484520)**:nefc 尾部重尾——256 envs 采样
+最大 62,4096 采样最大 622(reset 瞬态单 env 152 深接触)。此前 njmax=128
+在 4096 下截断 reset 瞬态 → 物理垃圾 → 管理器 scatter 越界崩溃(实测
+index 2543 into size 20)。修正为 768(=622×1.23),验证 overflow 全零。
+教训:**约束预算必须按"全 env 数下的尾部"定,不能按小规模采样的最大值**;
+njmax/nconmax 类预算调整必须在目标 env 数下复验 overflow。
+
+**QD_FUSION 总开关(mujoqo 93f45f7)**:QD_FUSION=1(默认)融合,=0 全部
+走逐 launch 原路径——所有融合位点(现有 3 个)保留非融合分支,融合引入
+差异时一键二分。solver 工作区三连 fill 合一入此批。solver_test 63P;
+256 A/B 融合 101.0ms vs 非融合 117.3ms(噪声内,融合无害)。
