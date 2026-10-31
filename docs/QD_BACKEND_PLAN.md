@@ -1061,3 +1061,73 @@ mmjlab 五任务库经默认路径不受影响(mega 默认关,门未命中走生
 本轮 differential 位精确(简单/中等约束场景一致);强非线性摩擦锥场景
 如出现 alpha 分歧,再按 §12.19 源映射表换装 verbatim 体。ctx.h 在 mega
 迭代间不回写(共享内存驻留),非 incremental 切片内无消费者。
+
+### 12.20 更正(2026-10-31):端到端 megakernel 数字作废
+
+§12.20 中“端到端 4096 170,830→173,954 steps/s(+1.8%)/ 256 env 42,614→42,925”
+**作废**:mmjlab `.venv-qd` 加载的是 `/Users/mini0/Code/mujoqo`(p1-forward-chain),
+不是 megakernel 所在的 worktree,两臂实际都跑生产路径,差值是噪声。有效数据仅
+为 `PYTHONPATH` 指向 worktree 的 solver 单独测量(iter_cap=30 下 vs 默认生产
+72µs/迭代)与 differential 冒烟。另:megakernel worktree 基于 f23fe51 之前的
+基线,合入前需 rebase 到 p1-forward-chain。
+
+### 12.21 全链 profile(2026-10-31,qd.metal,M4)
+
+工具(mmjlab/scripts):`profile_qd_step.py`(封装/host 底噪/kernel 计数/串行计时)、
+`stage_cost_qd.py`(阶段级 + kernel 级流水线边际成本,支持 `--task`)、
+`env_throughput_qd.py`(真实任务 env.step/物理吞吐 + QD_PLAN replay 覆盖率 +
+eager forward 计时)、`cprofile_qd_step.py`;xctrace Metal System Trace
+(attach 稳态 3s)。机器噪声大,结论均来自交替重复测量。
+
+**更正一个事实**:replay(方案 2)在生产代码里已实现且 Metal 默认开启——
+`mujoco_qd/_src/plan.py` 的 QD_PLAN(预热 30 步 eager → 录制 → 每步重放,
+守卫:Model/Data 身份、AD 未激活;录制失败标记 impossible 后永久 eager,无提示)。
+
+**humanoid bare(4096 envs)**:
+- 每步 126 次 kernel 调用;64 envs 下墙钟 6.4ms = 纯 host 调度底噪(~51µs/次)。
+- xctrace:GPU 忙碌 78%(每步 GPU 计算 ~17ms + 空闲气泡 ~4.7ms,气泡中位
+  274µs、p90 1.37ms,主要是 solver 逐迭代收敛读与 host 编码空档)。
+- 结论:4096 下以 GPU 计算为主,消掉全部气泡后 GPU 计算仍约为 mjbatch
+  (9.2ms/步)的 2 倍;megakernel 只能消 solver 那部分气泡,故收益小。
+
+**MicroDuck SitStand(你们实际训练任务,256 envs)**:
+- env.step ≈ 130–210ms(随机器负载),分段(host 墙钟,交替测量):
+  4×sim.step(replay)68ms + **eager `sim.forward()` 55ms** + manager 10ms。
+  mjlab 每次 env.step 末尾调一次 `sim.forward()`,QD_PLAN 只包 step 不包 forward,
+  所以它每次都走 eager。
+- 物理侧阶段成本:`collision_convex.ccd_kernel` 单 kernel **10.6ms**(~37%),
+  solver 8.2ms,primitive narrowphase 1.3ms。
+- `njmax=1500`(继承 velocity_env_cfg 默认),实际 nefc 均值 28、最大 46–62;
+  njmax 1500/256/128 → sim.step 31.0/28.3/22.6ms(128 时 cjac_block 快路径打开,
+  无溢出)。`naconmax=51200`,实际每 env 3.5 个接触。
+- solver 迭代均值 3.3、最大 12——不是迭代循环问题。
+- replay 中每步 ~274 次 kernel 调用,其中 ~222 次走 plan 的 slow 回退
+  (完整 `Kernel.__call__`,无 C1 快车道),replay 循环自身 Python ~11ms/步。
+
+**eager 路径问题(已定位)**:
+1. `cjac_block.contact_jac_block` 工厂缺 `@cache_kernel`,每次 eager 调用新建
+   kernel → 重走 AST 前端(~40ms)。**已修**(mujoqo `perf/eager-host-overhead`):
+   humanoid 4096 eager fwd_position 41.7→3.9ms、eager sim.forward 56.0→13.1ms,
+   replay step 不变(22.5ms)。
+2. `collision_convex.convex_narrowphase` 每次 eager 调用分配 17 个
+   `naccdmax` 级临时数组(MicroDuck 下合计 ~1 亿元素,分配+清零 ~36ms)。
+   改 `scratch` 复用:eager forward 53→18ms,但 env.step 内紧随的 replay 子步
+   +38ms,总体 133→152ms 负收益(推测共享大缓冲引入跨 command buffer 依赖,
+   未证实)——**已撤回**。正确方向是让 forward 也走 replay(见下)。
+   排序后对比确认碰撞结果与缓冲初值无关(dist/pos 差 0)。
+
+**顺带发现**:
+- 接触密集场景下 qacc 运行间差异可达 ~275(两次都清零的对照组同样存在):
+  接触槽位由原子操作分配 → efc 行序不同 → solver 数值不同。复现性问题,独立跟踪。
+- Go1 velocity 任务的 CPU 射线传感器在 `device=mps` 下张量设备不一致崩溃
+  (raycast_cpu.py:460)。
+
+**热点与下一步(按对你们训练吞吐的收益排序)**:
+1. **forward 走 replay**(plan 同时录制 `forward`):MicroDuck 每 env.step 可省
+   ~40ms 量级(eager forward 55ms → 预计接近其 GPU 成本)。
+2. **ccd_kernel**(10.6ms/子步 × 4):查凸碰撞对数量与每对成本,评估 broadphase
+   预筛/kernel 结构;涉及碰撞几何的任务级改动需你确认。
+3. **njmax 按实际需求收紧**(1500→128/256,带溢出监控):子步 31→22.6ms;
+   任务配置改动,需你确认溢出余量策略。
+4. **replay slow 回退**:222/274 次调用不走 C1 快车道,查资格条件。
+5. megakernel / READ_EVERY:solver 迭代少,对 MicroDuck 优先级低。
