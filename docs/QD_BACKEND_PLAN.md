@@ -1235,3 +1235,33 @@ env_throughput_qd.py 增加 `--backend classic`(mjbatch 对照,include_efc 自�
 越摊薄。小批量要追平需要整步 megakernel 化(大工程),否则 qd 的适用域是
 大批量训练。管理器(torch 层)开销两后端同源,优化它惠及所有后端——
 且 profile/优化/验证都远比 kernel 级容易,优先级最高。
+
+### 12.25 Metal 内存失控归因与修复 + 分块融合第一批(2026-10-31)
+
+**① metal@4096 OOM 根因(已修)**:两级内存盘点(256 基线 vs 4096 现场)证明
+构造完成后内存健康(qd 数组 60MB、torch 0.5GB、RSS 1.7GB),27GB 出现在
+步进中:8 步 env.step 驱动侧 Metal 内存 0.74→14.08GiB 持续增长。归因:
+`convex_narrowphase` 每子步 fresh 分配 17 个 naccdmax 级工作区
+(naccdmax=naconmax=819200 @4096,17 个合计 GB 级),Metal 侧不复用旧缓冲,
+暖机期累积 → 27GB → 16GB 机器 swap/OOM。修复:全部挂 Data scratch 复用
+(zero=False,写前读工作区)。修复后:预热 50s→17s,内存封顶 14GB
+(一次性驻留副本)不再增长,metal@4096 端到端从"12 分钟预热跑不完"变为
+可跑(best 17.0ms/子步 = 240,384 env-steps/s;机器负载波动 ±2.5×,绝对值
+需安静环境复测)。256 env.step A/B 无回退(93.2 vs 94.3ms;此前 scratch
+实验的 +38ms 隐患随 forward 走 replay 消失——稳态不再执行 eager convex)。
+collision_driver_test 84P。
+
+**溢出现象(待定预算)**:4096 warmup 瞬态 nacon 达 152/env(深接触,
+reset 遥 teleport 期),nefc 峰值 622 → NEFC/CONTACT_MATCH overflow 置位;
+稳态回落。nconmax=200 是 reset 瞬态的合理预算; njmax=128 在 warmup 瞬态
+不足。预算收紧与溢出容忍度需结合训练影响单独定。
+
+**② 分块融合第一批(已落地)**:两组相邻 fill 各合一个 kernel——
+fwd_actuation 三连 fill(act_dot/qfrc_actuator/actuator_force)与 contact
+工作区三连 fill(nmatch/matchid/criteria,顺带 criteria 从 wp_empty 改
+scratch)。16 fill/step 中消掉 4 个 launch。256 无回退;4096 收益在噪声内
+(预期 ~0.5ms/步)。后续批次按同模式逐组推进。
+
+**机器噪声警告**:本机(16GB,后台有渲染/合成器负载)4096 metal 单次测量
+波动 2.4×(同代码 17.0/19.6/41.5ms),绝对吞吐结论需 min-of-N 或安静环境;
+相对 A/B 必须交替进行。
