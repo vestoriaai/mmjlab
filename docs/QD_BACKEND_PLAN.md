@@ -1292,3 +1292,35 @@ njmax/nconmax 类预算调整必须在目标 env 数下复验 overflow。
 走逐 launch 原路径——所有融合位点(现有 3 个)保留非融合分支,融合引入
 差异时一键二分。solver 工作区三连 fill 合一入此批。solver_test 63P;
 256 A/B 融合 101.0ms vs 非融合 117.3ms(噪声内,融合无害)。
+
+### 12.27 无用 Metal 内存清除:npair×nworld 候选上界(2026-10-31)
+
+**naccdmax 与 naconmax 解耦(io.py put_data)**:EPA/multiccd 工作区按
+`d.naccdmax` 定尺寸,而 naccdmax 原默认 = naconmax(=nconmax×nworld,
+接触槽位预算)= 819,200@4096。实际只需覆盖 CCD 候选数: broadphase 每
+(候选对, world)至多 1 个候选 → 上界 = nxn_geom_pair_filtered × nworld
+(MicroDuck 4096 = 3×4096 = 12,288,66× 差)。kernel 侧已有
+`ccdid >= naccdmax → OverflowType.CCD` 守卫(超额置位,无越界),故只需
+改默认尺寸;pair 数经模块级登记从 put_model(numpy 域)传给 put_data。
+flex 模型另有候选源,保守回退 naconmax。
+
+**效果(metal@4096)**:驱动侧 14.08→**2.48GB(-82%)**,warmup 43→10s,
+RSS 1.67GB 不再页换,overflow 全零,naconmax 本身不变(接触槽位预算)。
+256 的 naccdmax=4096(=floor),collision_driver 84P。
+
+**剩余内存构成(4096)**:convex scratch ~30MB + 数组 60MB + torch 0.02GB
++ **~2.3GB quadrants Metal buffer 池**(释放不还 OS 的缓存;组件隔离实验
+证明与 QD_LAUNCH_FAST/QD_PLAN 无关;Python 层无 trim API——上游项,当前
+总量 4GB@16GB 机器可接受)。
+
+**融合第二批**:cam+light local→global 合一(union-loop,同段相邻同构
+分支,静态 ncam/nlight;两体逐字转录)。QD_FUSION=0/1 双分支
+smooth_test 均 84P。连同 solver ws reset 共 4 个融合位点。
+
+**吞吐现状(诚实口径)**:4096 metal ~32.7ms/子步(125k env-steps/s 物理;
+机器噪声 ±2.4×)vs mjbatch 10.5ms → **3.1×**。注意 17ms 旧数字是
+njmax=128(截断错误)下的,不可比;768 正确性预算使 solver 约束扫描 ×6
+(efc 行循环静态 trip=njmax,per-world nefc 动态守卫空扫 690 行)。256:
+env.step 114ms(mjbatch 28,927 物理 vs qd.metal ~2,000 → 差距仍在,主要
+为每子步固定 GPU 成本)。结构性收敛方向:efc 行循环界与实际 nefc 动态
+绑定(需 device 端 max,或分桶)——单独立项。
