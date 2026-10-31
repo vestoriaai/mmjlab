@@ -1179,3 +1179,32 @@ humanoid bare 4096:sim.step 22.5→9.95-10.6ms(机器负载波动区间),
   如需逐位复现须 efc 行排序后处理(工程量大,单独立项)。
 - sensor_test 7F / collision_gjk 2F(gjk max2/cylinder)为 HEAD 既有失败
   (stash 对照确认),与本次改动无关。
+
+### 12.23 追问三连:f64 审计 / sensor 7F 根因 / CPU plan 默认开(2026-10-31)
+
+**f64 审计(结论:全管线默认 f32,f64 无代价,无需改)**:数组/求解器全 f32;
+f64 只存在于 CPU/CUDA 的 GJK/EPA 行列式与光线-三角掠射分支
+(`hp_dtype()`,A47 精度修复,Metal 上本来就是 f32——SPIR-V 无 f64)。
+实测 MicroDuck 256 envs CPU:强制 HP=f32 后 73.6ms vs 默认(f64)68.5ms
+——f64 中间量不是 CPU 瓶颈,改 f32 无收益。
+
+**sensor_test 7F 根因(已修,53/53 全绿)**:
+- 5F(contact found 恒 0):MuJoCo 给 `data="found"`(reduce=None/mindist)
+  的 needstage 是 POS,qd 的 contact 输出只由 `_sensor_acc`(ACC)写;
+  `sensor_acc_adr` 按 needstage==ACC 构建漏掉它们 → 恒 0。修:CONTACT
+  类型无条件纳入 acc 列表(io.py)。found/maxforce 因 needstage=ACC 侥幸在内。
+- 2F(tactile cutoff):mujoco 3.17 C 引擎对 tactile **不施加** cutoff
+  (cutoff=0.01 与 0 输出一致,实测),qd 多做了 clamp——跟随参考移除,
+  测试断言同步更新。
+
+**CPU 后端 QD_PLAN 默认开启(mujoqo e893749)**:CPU per-launch Python
+开销占比远大于 Metal,plan 收益 ~8×(MicroDuck 256: 76-86→9.2ms/子步,
+physics 2,900→7,291 env-steps/s)。位精确 parity(forward+step vs eager,
+qacc/sensordata 全 0 差)验证后默认开;QD_PLAN=0 可关。
+
+**剩余加速点排序(本轮后)**:
+1. env.step 的 manager/reward/obs(torch 侧):CPU 上占 42%、metal ~20-40%
+   ——mjlab 层,不在物理引擎内,是下一个最大头。
+2. humanoid metal 4096:9.95ms vs mjbatch 9.2ms,差 <8%;再压需 kernel 级
+   GPU 优化(ccd/com_pos_mega/solver kernel),收益 <1ms,投入产出低。
+3. CPU 臂 GJK f64:无代价(见上),不动。
