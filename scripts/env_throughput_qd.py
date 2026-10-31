@@ -20,6 +20,7 @@ def main() -> None:
   p.add_argument("--warmup", type=int, default=60)
   p.add_argument("--steps", type=int, default=200)
   p.add_argument("--njmax", type=int, default=None, help="覆盖 cfg.sim.njmax(实验用)")
+  p.add_argument("--backend", default="qd", choices=["qd", "classic"])
   args = p.parse_args()
 
   import torch
@@ -32,11 +33,25 @@ def main() -> None:
   env_cfg.scene.num_envs = args.num_envs
   if args.njmax is not None:
     env_cfg.sim.njmax = args.njmax
+  if args.backend == "classic":
+    env_cfg.sim.include_efc = True  # MicroDuck 观测/管理器读 efc
+  if args.backend == "classic":
+    args.device = "cpu"
+  env_cfg.sim.backend = args.backend
   env = ManagerBasedRlEnv(cfg=env_cfg, device=args.device)
   env.reset()
 
-  import quadrants as qd
-  from mujoco_qd._src import plan
+  if args.backend == "classic":
+    class _NoSync:
+      def sync(self):
+        pass
+    qd = _NoSync()
+  else:
+    import quadrants as qd
+  if args.backend == "qd":
+    from mujoco_qd._src import plan
+  else:
+    plan = None
 
   action = torch.zeros(env.num_envs, sum(env.action_manager.action_term_dim), device=env.device)
   for _ in range(args.warmup):
@@ -45,6 +60,8 @@ def main() -> None:
 
   def plan_state():
     out = []
+    if plan is None:
+      return [("classic", "-", "-")]
     for key, ent in plan._PLAN_CACHE.items():
       state = ent[0]
       kind = "replay" if (state is not None and not isinstance(state, str)) else (
@@ -65,6 +82,13 @@ def main() -> None:
     env.step(action)
   qd.sync()
   envsps = args.num_envs * args.steps / (time.perf_counter() - t0)
+
+  if args.backend == "classic":
+    print(f"task={args.task} envs={args.num_envs} backend=classic decimation={dec}")
+    print(f"  physics: {phys:,.0f} env-steps/s  ({1e3 * args.num_envs / phys / dec:.3f} ms/sim.step)")
+    print(f"  env.step: {envsps:,.0f} env-steps/s  (manager 开销 {100 * (1 - envsps / phys):.1f}%)")
+    env.close()
+    return
 
   nf = 30
   t0 = time.perf_counter()

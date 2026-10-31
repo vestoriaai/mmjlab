@@ -1208,3 +1208,30 @@ qacc/sensordata 全 0 差)验证后默认开;QD_PLAN=0 可关。
 2. humanoid metal 4096:9.95ms vs mjbatch 9.2ms,差 <8%;再压需 kernel 级
    GPU 优化(ccd/com_pos_mega/solver kernel),收益 <1ms,投入产出低。
 3. CPU 臂 GJK f64:无代价(见上),不动。
+
+### 12.24 最终吞吐对照(mjbatch 加入 MicroDuck 对照)与优化路线定性(2026-10-31)
+
+env_throughput_qd.py 增加 `--backend classic`(mjbatch 对照,include_efc 自动开)。
+
+**MicroDuck SitStand 256 envs**(decimation=4):
+
+| 后端 | 物理 | env.step | vs mjbatch 物理 |
+|---|---|---|---|
+| mjbatch CPU(classic) | **92,625**(0.691ms/子步) | 28,927(管理器 68.8%) | 1× |
+| qd.metal | ~3,300(19.3ms/子步) | ~2,000 | 慢 ~28× |
+| qd.cpu(plan 默认开后) | 7,291(8.8ms/子步) | 4,193(管理器 42%) | 慢 ~13× |
+
+**humanoid bare 4096 envs**(best-of-5,同机同条件;机器负载波动 ±20%):
+
+| 后端 | env-steps/s | ms/步 | vs mjbatch |
+|---|---|---|---|
+| mjbatch CPU | 447,633(§12.19) | 9.15 | 1× |
+| qd.metal | ~348,000 | 11.7-12.6(安静时段 9.95) | 慢 ~22% |
+| qd.cpu | ~195,000 | 21.0 | 慢 ~56% |
+
+**定性结论**:qd 与 mjbatch 的差距随 env 数急剧变化——4096 差 22%,
+256 差 28×。根因是 qd GPU 路径每子步 ~223 个 kernel 的**固定 GPU 开销**
+在小 env 数下占主导(mjbatch 的 C++ 线程池没有这种固定成本);env 数越大
+越摊薄。小批量要追平需要整步 megakernel 化(大工程),否则 qd 的适用域是
+大批量训练。管理器(torch 层)开销两后端同源,优化它惠及所有后端——
+且 profile/优化/验证都远比 kernel 级容易,优先级最高。
