@@ -1131,3 +1131,51 @@ eager forward 计时)、`cprofile_qd_step.py`;xctrace Metal System Trace
    任务配置改动,需你确认溢出余量策略。
 4. **replay slow 回退**:222/274 次调用不走 C1 快车道,查资格条件。
 5. megakernel / READ_EVERY:solver 迭代少,对 MicroDuck 优先级低。
+
+### 12.22 四项优化落地(2026-10-31):forward replay + C1 快车道 + ccd 网格上界 + njmax 收紧
+
+**① forward 走 replay**(mujoqo `perf/eager-host-overhead` 35d49f0):
+`forward()` 与 `step()` 同构接入 QD_PLAN(`kind="forward"` 独立缓存键,
+step/forward 计划互不污染;RK4 内部改调 `_forward_body` 防计划嵌套)。
+parity:replay vs eager 位精确(xpos/xquat/cvel/qfrc_bias/actuator_force/
+contact 排序后/nefc 全 0 差,qacc 在接触重排包络内)。MicroDuck 256:
+forward 段 host 79.7→14.5ms。
+
+**④ replay slow 回退 → C1a 快车道**(quadrants `perf/launch-ctx-cache` d4456e7):
+A85 实验期间 launch-ctx 缓存被整体禁用(kernel.py `populate` 恒 False),
+C1a lane 永不填充 → 每步 ~222 次调用走完整 Kernel.__call__。恢复缓存 +
+三项正确性配套:(a) 缓存键补 grad 身份(.grad 替换必须未命中);(b) 顶层
+python 标量按值入键(id 跨值回收 → 按值键安全且可缓存);(c) lane 填充要求
+ctx 键与裸参数键同构。lane-hit 222/223;MicroDuck 4×sim.step host 119→61ms;
+humanoid 4096 sim.step 22.5→**9.95ms**(与 mjbatch 9.2ms 基本拉平)。
+
+**② ccd 网格上界**(35d49f0):grid-stride 宽度从 naconmax 满宽(MicroDuck
+51200,~5 万个几乎全空的线程组串行扫描,10.6ms/launch)收紧到
+`max(4096, 2×nnxn_pair×nworld)`。子步 24.7→20.7ms;collision_driver 84P。
+
+**③ njmax 收紧**(microduck_rl 837daba):SitStand njmax 1500→256(实际
+nefc 均值 ~28、最大 ~62;4× 余量)。子步再 -2ms;溢出按 OverflowType
+符号名监控(env_throughput_qd.py),无 CONSTRAINT 置位。
+
+**新问题修复**:
+- **Go1 velocity mps 崩溃**(mmjlab 37781f0):CPU raycast 的常数张量
+  (static geom pos0/rot0、hfield 高度表/corner 表、body_exclude)与输出
+  (tmin/normals)固定 host 设备,与 mps 输入混合即 device mismatch,
+  reset 即崩。全部改 device 感知 + TorchArray/QdBridge 暴露 `.device`。
+  Go1 mps 端到端跑通;cpu 路径不回归。
+- **gravcomp 每步回读**(35d49f0):passive 每步 `body_gravcomp.to_numpy()
+  .any()`(nbody 数组回读 + sync)改 Model.ngravcomp_nonzero 标量门
+  (put_model/set_const_fixed 维护;set_const 全量重算包含 fixed,DR 路径自动维护)。
+
+**汇总(MicroDuck SitStand 256 envs,mps)**:env.step 基线 ~280ms(高负载
+时段测得 ~210ms)→ **~95-109ms**;其中 4×sim.step 119→61ms(njmax 前)/56ms
+(njmax 后),forward 79.7→14.5ms。physics env-steps/s 2,062 → 3,237(+57%)。
+humanoid bare 4096:sim.step 22.5→9.95-10.6ms(机器负载波动区间),
+与 mjbatch(9.2ms)差 <15%。
+
+**遗留**:
+- 接触槽位原子分配顺序 → efc 行序运行间不同 → 强接触场景 qacc 运行间
+  差异可达 ~275(与 replay 无关,eager 对照组同幅)。复现性问题,
+  如需逐位复现须 efc 行排序后处理(工程量大,单独立项)。
+- sensor_test 7F / collision_gjk 2F(gjk max2/cylinder)为 HEAD 既有失败
+  (stash 对照确认),与本次改动无关。
